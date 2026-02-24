@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package aegis;
+
+option go_package = "aegis-stream/pb";
+
+message Trade {
+  string symbol = 1;
+  double price = 2;
+  int32 volume = 3;
+  int64 timestamp = 4;
+}
+
+message Log {
+  string level = 1;
+  string message = 2;
+  string service_name = 3;
+  int64 timestamp = 4;
+}
+
+message Event {
+  string event_id = 1;
+  oneof payload {
+    Trade trade = 2;
+    Log log = 3;
+  }
+}
