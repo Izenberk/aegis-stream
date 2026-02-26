@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
+	// "fmt"
 	"io"
 	"log"
 	"net"
@@ -134,9 +134,11 @@ func worker(wg *sync.WaitGroup, id int, jobs <-chan Job) {
 
 		switch payload := event.Payload.(type) {
 		case *pb.Event_Trade:
-			fmt.Printf("[Worker %d] Routed Trade | Symbol: %s | Price: %f\n", id, payload.Trade.Symbol, payload.Trade.Price)
+			_ = payload
+			// fmt.Printf("[Worker %d] Routed Trade | Symbol: %s | Price: %f\n", id, payload.Trade.Symbol, payload.Trade.Price)
 		case *pb.Event_Log:
-			fmt.Printf("[Worker %d] Routed Log   | Level: %s | Msg: %s\n", id, payload.Log.Level, payload.Log.Message)
+			_ = payload
+			// fmt.Printf("[Worker %d] Routed Log   | Level: %s | Msg: %s\n", id, payload.Log.Level, payload.Log.Message)
 		}
 
 		// 4. Return the buffer to the pool for the next connection to use
