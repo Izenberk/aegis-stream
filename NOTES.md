@@ -529,3 +529,246 @@ aegis_events_processed_total{type="trade"} 100000
 aegis_events_processed_total{type="log"} 0
 ```
 The bench tool parses this with string splitting — simple but effective. In production, you'd use the Prometheus client library, but for a benchmark tool, basic parsing is fine.
+
+---
+
+## Phase 2: Kubernetes Integration
+
+### Multi-stage Dockerfile
+
+**Why multi-stage?** A Go build needs the full toolchain (~800MB). Your production container only needs the compiled binary (~12MB). Multi-stage builds use one image to compile and a second image to run:
+
+```
+Stage 1 (golang:alpine)  →  compile  →  /bin/server
+Stage 2 (scratch)         →  copy /bin/server  →  final image (11.8MB)
+```
+
+**Why `scratch`?** It's a completely empty image — no OS, no shell, no package manager, nothing. The only files are what you explicitly `COPY` in. This gives you:
+- **Tiny size** — only the binary and CA certs (11.8MB vs 800MB+)
+- **Minimal attack surface** — no shell means attackers can't exec into the container
+- **Fast pulls** — K8s nodes download small images much faster during scale-up
+
+**Why `CGO_ENABLED=0`?** Go can call C libraries via CGo. But C code links dynamically to `libc`, which doesn't exist in `scratch`. Disabling CGo produces a statically linked binary that contains everything it needs — no external dependencies.
+
+**Why `-ldflags="-s -w"`?**
+- `-s` strips the symbol table (function names, used for debugging)
+- `-w` strips DWARF debug info
+- Together they reduce binary size by ~30% with no runtime impact
+
+**Why copy `go.mod` before source code?** Docker caches each layer. If `go.mod` hasn't changed, `go mod download` is skipped entirely on rebuild. This means changing a `.go` file only triggers the compile step, not the dependency download. Saves minutes on iterative builds.
+
+**`EXPOSE 9000 2112`** doesn't actually publish ports — it's documentation. K8s reads these as hints when writing Service manifests, but the actual port mapping is done in the Deployment YAML.
+
+**`ENTRYPOINT ["/server"]`** uses the exec form (JSON array), not the shell form (`ENTRYPOINT /server`). The exec form runs the binary directly as PID 1, which means it receives SIGTERM from K8s directly — critical for our graceful shutdown to work.
+
+---
+
+### k3s Setup
+
+**What is k3s?** A lightweight Kubernetes distribution by Rancher. It's a single binary (~50MB) that runs the full K8s API. Ideal for local development and learning — you get real K8s behavior without the overhead of minikube or kind.
+
+**k3s vs Docker:** k3s uses containerd (not Docker) as its container runtime. Docker images aren't visible to k3s by default. To get images in:
+```bash
+docker save aegis-stream:latest -o /tmp/aegis-stream.tar
+sudo k3s ctr images import /tmp/aegis-stream.tar
+```
+
+**kubeconfig:** K8s tools (`kubectl`) need a config file to know where the cluster is. k3s writes it to `/etc/rancher/k3s/k3s.yaml`. Copying it to `~/.kube/config` lets you run `kubectl` without `sudo`.
+
+---
+
+### Deployment
+
+**What it does:** A Deployment tells K8s "run N copies of this container and keep them alive." If a pod crashes, K8s replaces it. If a node dies, K8s reschedules.
+
+**Key fields:**
+
+| Field | Purpose |
+|-------|---------|
+| `replicas: 2` | How many identical pods to run |
+| `selector.matchLabels` | How the Deployment finds its pods (by label) |
+| `template` | Blueprint for each pod — every pod is a copy of this |
+| `imagePullPolicy: Never` | Use local image, don't pull from Docker Hub |
+| `env` | Config via environment variables (read by `internal/config`) |
+
+**Probes — how K8s monitors your app:**
+
+| Probe | Question | On failure |
+|-------|----------|-----------|
+| `livenessProbe` | "Is the process stuck?" | K8s kills and restarts the pod |
+| `readinessProbe` | "Can it accept traffic?" | K8s removes pod from Service (no traffic) |
+
+Both hit our `/healthz` endpoint. During graceful shutdown, `/healthz` returns 503, so the readiness probe fails and K8s stops sending traffic *before* the pod actually dies.
+
+**`initialDelaySeconds`:** How long to wait after the container starts before the first probe. Gives the server time to bind ports and spawn workers.
+
+---
+
+### Service
+
+**The problem:** Pods are ephemeral — they get new IP addresses every time they restart. You can't hard-code a pod IP.
+
+**The solution:** A Service provides a stable DNS name (`aegis-stream.default.svc.cluster.local`) that always routes to healthy pods. It load-balances across all pods that match its `selector`.
+
+**How it finds pods:** The Service's `selector: app: aegis-stream` matches the Deployment's `template.metadata.labels.app: aegis-stream`. Any pod with that label automatically gets traffic.
+
+**Service types:**
+
+| Type | Reachable from | Use case |
+|------|---------------|----------|
+| `ClusterIP` (default) | Inside the cluster only | Internal services |
+| `NodePort` | Outside via node IP + port | Quick external access |
+| `LoadBalancer` | Outside via cloud load balancer | Production |
+
+We use `ClusterIP` because Aegis Stream is an internal data router. For local testing, `kubectl port-forward` tunnels traffic from your laptop into the cluster.
+
+**`port` vs `targetPort`:**
+- `port: 9000` — what other services in the cluster connect to
+- `targetPort: tcp-data` — forwarded to the container's named port (9000)
+
+Using named ports (`tcp-data`, `http-metrics`) instead of numbers means you can change the container port without updating the Service.
+
+---
+
+### kubectl port-forward
+
+**What it does:** Creates a tunnel from `localhost` on your machine to a Service (or pod) inside the cluster. No external networking needed.
+
+```bash
+kubectl port-forward svc/aegis-stream 9000:9000 2112:2112
+```
+
+This maps:
+- `localhost:9000` → Service port 9000 → pod port 9000 (TCP data)
+- `localhost:2112` → Service port 2112 → pod port 2112 (metrics/healthz)
+
+**Not for production.** Port-forward is a dev tool. In production, you'd use a LoadBalancer Service or an Ingress controller.
+
+---
+
+### Helm
+
+**What is Helm?** The package manager for Kubernetes — like `apt` for Ubuntu or `brew` for macOS, but for your cluster. Instead of writing dozens of YAML files for complex tools (Prometheus, Grafana, databases), you install them with one command.
+
+**Key concepts:**
+
+| Concept | What it is |
+|---------|-----------|
+| **Chart** | A package of K8s manifests (like a `.deb` or `.rpm` file) |
+| **Repository** | Where charts are hosted (like an apt repo) |
+| **Release** | A running instance of a chart in your cluster |
+| **Values** | Config overrides you pass to customize a chart |
+
+**Why use Helm?** Installing Prometheus manually requires ~15 YAML files (Deployment, Service, ConfigMap, RBAC, ServiceAccount, etc.). A Helm chart packages all of them into one installable unit:
+```bash
+helm install prometheus prometheus-community/prometheus
+```
+
+This creates all the resources, wired together correctly. You can customize with `--set` flags or a `values.yaml` file.
+
+**Helm vs writing your own YAML:** Use Helm for third-party tools (Prometheus, Grafana, databases). Write your own YAML for your app (aegis-stream) — because you need to understand every line of your own deployment.
+
+---
+
+### Prometheus Scraping in K8s
+
+**How Prometheus discovers pods:** Prometheus watches the K8s API for pods with specific annotations:
+```yaml
+annotations:
+  prometheus.io/scrape: "true"     # "yes, scrape me"
+  prometheus.io/port: "2112"       # which port
+  prometheus.io/path: "/metrics"   # which path
+```
+
+Prometheus sees these annotations, connects to the pod's IP on port 2112, and pulls metrics every 15 seconds. No configuration file needed — it's fully automatic.
+
+**Labels vs Annotations:**
+- **Labels** are for K8s itself — selectors, Services, Deployments use them to find resources
+- **Annotations** are for external tools — Prometheus, CI/CD systems, monitoring. K8s stores them but doesn't act on them
+
+---
+
+### prometheus-adapter
+
+**The problem:** HPA speaks the K8s custom metrics API. Prometheus speaks PromQL. They don't understand each other.
+
+**The solution:** prometheus-adapter sits in between and translates:
+```
+HPA → "what's aegis_queue_depth for pod X?"
+  → adapter queries Prometheus with PromQL
+  → adapter returns the value in K8s API format
+  → HPA makes scaling decisions
+```
+
+**The rules config** tells the adapter which Prometheus metrics to expose:
+```yaml
+seriesQuery: 'aegis_queue_depth{namespace!="",pod!=""}'
+```
+This means: "find the `aegis_queue_depth` metric, and expose it per-pod so HPA can read it."
+
+---
+
+### HorizontalPodAutoscaler (HPA)
+
+**What it does:** Watches a metric, compares it to a target, and adjusts the number of replicas in a Deployment.
+
+**The scaling formula:**
+```
+desiredReplicas = currentReplicas × (currentMetricValue / targetMetricValue)
+```
+Example: 2 pods, queue depth 3000, target 1000:
+```
+desiredReplicas = 2 × (3000 / 1000) = 6 pods
+```
+
+**Key fields:**
+
+| Field | Purpose |
+|-------|---------|
+| `minReplicas: 2` | Floor — never scale below this (ensures redundancy) |
+| `maxReplicas: 10` | Ceiling — never scale above this (cost control) |
+| `averageValue: "1000"` | Target queue depth per pod — HPA aims for this |
+
+**Scale up vs scale down behavior:**
+- **Scale up fast** — bursts are time-sensitive (30s stabilization, add 2 pods at a time)
+- **Scale down slowly** — avoid flapping: scaling down then immediately back up wastes resources (120s stabilization, remove 1 pod at a time)
+
+**Stabilization window:** HPA waits this long before acting. If queue depth spikes for 5 seconds then drops, the 30s window prevents unnecessary scale-up. Only sustained load triggers scaling.
+
+**The full data flow:**
+```
+aegis-stream pod → /metrics (aegis_queue_depth)
+  → Prometheus scrapes every 15s
+  → prometheus-adapter translates to K8s API
+  → HPA reads every 15s
+  → HPA adjusts Deployment replicas
+  → K8s creates/deletes pods
+```
+
+**Milli-units in K8s metrics:** When HPA shows `9835800m/1k`, the `m` means milli. So `9835800m` = 9835.8. K8s uses milli-units internally for precision. `1k` = 1000 (the target).
+
+---
+
+### Stress Testing Observations
+
+**What we tested:** 5 concurrent bench clients blasting 100k events each, with workers reduced to 1 to create backpressure.
+
+**What we observed:**
+```
+Replicas: 2 → 4 → 6 → 8 → 10 (hit maxReplicas)
+Queue depth peaked at ~50k, then slowly drained
+Scale-up took ~3 minutes (30s stabilization + 2 pods every 60s)
+Scale-down takes ~10 minutes (120s stabilization + 1 pod every 60s)
+```
+
+**Key lessons learned:**
+
+1. **Prometheus has a 15s scrape delay.** HPA doesn't see real-time queue depth — it sees a 15-30 second old snapshot. This is why stabilization windows exist.
+
+2. **Scale-up is intentionally faster than scale-down.** Bursts need fast reaction (add capacity). But scaling down too fast causes *flapping* — removing pods then immediately needing them back. The asymmetry (30s up / 120s down) prevents this.
+
+3. **maxReplicas is a safety net, not a guarantee.** Once you hit 10 pods, HPA stops scaling even if load keeps rising. The queue fills up, TCP handlers block, and clients get errors. In production, set alerts on queue depth to catch this before users are affected.
+
+4. **Worker count matters as much as pod count.** Reducing from 50 to 1 worker created massive backpressure. Scaling pods helps, but tuning workers per pod is equally important.
+
+5. **`kubectl set env` triggers a rolling restart.** Changing an env var replaces all pods — useful for live config changes, but breaks active connections and port-forwards.

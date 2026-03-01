@@ -1,0 +1,15 @@
+# Custom rules tell prometheus-adapter how to translate Prometheus metrics
+# into the K8s custom metrics API that HPA can read.
+rules:
+  custom:
+    # This rule exposes aegis_queue_depth as a per-pod metric.
+    # HPA will query it as: pods/aegis_queue_depth
+    - seriesQuery: 'aegis_queue_depth{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        matches: "^(.*)$"
+        as: "${1}"            # Keep the original metric name
+      metricsQuery: '<<.Series>>{<<.LabelMatchers>>}'

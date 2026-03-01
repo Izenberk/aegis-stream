@@ -1,0 +1,75 @@
+# A Deployment tells K8s: "run N copies of this container and keep them alive."
+# If a pod crashes, K8s automatically replaces it. If a node dies, K8s reschedules pods elsewhere.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis-stream
+  labels:
+    app: aegis-stream          # Labels are key-value tags for organizing resources
+spec:
+  replicas: 2                  # Run 2 identical pods for redundancy
+
+  # selector tells the Deployment which pods belong to it.
+  # It matches pods by label — must match template.metadata.labels below.
+  selector:
+    matchLabels:
+      app: aegis-stream
+
+  # template defines what each pod looks like.
+  # Every pod created by this Deployment is a copy of this template.
+  template:
+    metadata:
+      labels:
+        app: aegis-stream      # Pods get this label — matches selector above
+      # Annotations are metadata that tools (like Prometheus) read.
+      # These tell Prometheus: "scrape this pod's /metrics endpoint on port 2112."
+      annotations:
+        prometheus.io/scrape: "true"       # Prometheus discovers this pod
+        prometheus.io/port: "2112"         # Which port to scrape
+        prometheus.io/path: "/metrics"     # Which path to hit
+    spec:
+      containers:
+        - name: aegis-stream
+          image: docker.io/library/aegis-stream:latest
+          imagePullPolicy: Never   # Use the local image we imported with k3s ctr, don't pull from Docker Hub
+
+          # Declare which ports the container listens on.
+          # Named ports can be referenced by name in Services and probes.
+          ports:
+            - name: tcp-data
+              containerPort: 9000      # TCP data plane
+            - name: http-metrics
+              containerPort: 2112      # Prometheus /metrics + /healthz
+
+          # Config via env vars — this is why we built internal/config.
+          # Same binary, different config per environment (dev/staging/prod).
+          env:
+            - name: AEGIS_PORT
+              value: ":9000"
+            - name: AEGIS_WORKERS
+              value: "50"
+            - name: AEGIS_QUEUE_DEPTH
+              value: "100000"
+            - name: AEGIS_MAX_CONNS
+              value: "500"
+            - name: AEGIS_READ_TIMEOUT
+              value: "30s"
+
+          # livenessProbe: "Is the process stuck?"
+          # If /healthz fails 3 times in a row, K8s kills and restarts the pod.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-metrics
+            initialDelaySeconds: 5     # Wait 5s after start before first check
+            periodSeconds: 10          # Check every 10s
+
+          # readinessProbe: "Can it accept traffic?"
+          # If /healthz returns 503, K8s removes the pod from the Service endpoints.
+          # Traffic goes to other healthy pods until this one recovers.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http-metrics
+            initialDelaySeconds: 2     # Shorter delay — we want fast traffic routing
+            periodSeconds: 5

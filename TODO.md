@@ -51,11 +51,11 @@ These should be done before starting Phase 2 (K8s).
 
 Only start these after Phase 1.5 is complete.
 
-- [ ] Multi-stage `Dockerfile` (scratch base, target < 20MB)
-- [ ] Push image to local registry for k3s
-- [ ] `Deployment` manifest with env-based config
-- [ ] `Service` manifest (headless for internal comms)
-- [ ] `HorizontalPodAutoscaler` based on Prometheus metrics
+- [x] Multi-stage `Dockerfile` (scratch base, actual: 11.8MB)
+- [x] Import image into k3s via `docker save` + `k3s ctr images import`
+- [x] `Deployment` manifest with env-based config, liveness/readiness probes
+- [x] `Service` manifest (ClusterIP, TCP + metrics ports)
+- [x] `HorizontalPodAutoscaler` based on Prometheus `aegis_queue_depth` metric
 - [ ] Grafana dashboard template for queue depth, throughput, errors
 
 ---

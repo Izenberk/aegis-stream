@@ -1,0 +1,29 @@
+# A Service gives your pods a stable network address.
+# Pods are ephemeral — they get new IPs when they restart.
+# A Service provides a fixed DNS name (aegis-stream.default.svc.cluster.local)
+# that always routes to whichever pods are healthy.
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegis-stream
+spec:
+  # selector matches the same label as the Deployment.
+  # The Service automatically discovers pods with this label
+  # and load-balances traffic across them.
+  selector:
+    app: aegis-stream
+
+  ports:
+    # TCP data plane — clients connect here to send events.
+    - name: tcp-data
+      port: 9000               # Port the Service listens on
+      targetPort: tcp-data     # Forward to the container's named port
+
+    # HTTP metrics — Prometheus scrapes here, /healthz lives here too.
+    - name: http-metrics
+      port: 2112
+      targetPort: http-metrics
+
+  # ClusterIP (default) means this Service is only reachable inside the cluster.
+  # For local testing, we'll use kubectl port-forward to reach it from your machine.
+  type: ClusterIP

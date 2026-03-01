@@ -1,4 +1,4 @@
-.PHONY: build test bench proto clean run
+.PHONY: build test bench proto clean run docker
 
 build:
 	go build -o bin/server ./cmd/server
@@ -19,6 +19,9 @@ bench: build
 
 proto:
 	protoc --go_out=. --go_opt=paths=source_relative proto/schema.proto
+
+docker:
+	docker build -t aegis-stream:latest .
 
 clean:
 	rm -rf bin/

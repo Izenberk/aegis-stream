@@ -1,0 +1,45 @@
+# HorizontalPodAutoscaler watches a metric and adjusts replicas automatically.
+# When queue depth is high → scale up (more pods to process events).
+# When queue depth is low → scale down (save resources).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: aegis-stream
+spec:
+  # Which Deployment to scale
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: aegis-stream
+
+  minReplicas: 2       # Never go below 2 (redundancy)
+  maxReplicas: 10      # Never exceed 10 (cost control)
+
+  metrics:
+    # Scale based on the average aegis_queue_depth across all pods.
+    # "Pods" type means HPA reads the metric from each pod and averages them.
+    - type: Pods
+      pods:
+        metric:
+          name: aegis_queue_depth
+        target:
+          type: AverageValue
+          averageValue: "1000"    # Target: keep average queue depth around 1000
+          # If average > 1000 → add pods
+          # If average < 1000 → remove pods (down to minReplicas)
+
+  # behavior controls how fast scaling happens.
+  # Scale up fast (react to bursts), scale down slowly (avoid flapping).
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30    # Wait 30s of sustained high load before adding pods
+      policies:
+        - type: Pods
+          value: 2                      # Add up to 2 pods at a time
+          periodSeconds: 60             # Can scale up every 60s
+    scaleDown:
+      stabilizationWindowSeconds: 120   # Wait 2 minutes of low load before removing pods
+      policies:
+        - type: Pods
+          value: 1                      # Remove only 1 pod at a time
+          periodSeconds: 60             # Can scale down every 60s
