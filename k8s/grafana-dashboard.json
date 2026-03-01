@@ -1,0 +1,137 @@
+{
+  "dashboard": {
+    "title": "Aegis Stream",
+    "tags": ["aegis"],
+    "timezone": "browser",
+    "refresh": "5s",
+    "panels": [
+      {
+        "title": "Events Processed (per second)",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "sum(rate(aegis_events_processed_total[1m])) by (type)",
+            "legendFormat": "{{type}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ops"
+          }
+        }
+      },
+      {
+        "title": "Queue Depth",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "sum(aegis_queue_depth)",
+            "legendFormat": "total queue depth"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "thresholds": {
+              "steps": [
+                {"value": 0, "color": "green"},
+                {"value": 1000, "color": "yellow"},
+                {"value": 10000, "color": "red"}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "Active Connections",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+        "targets": [
+          {
+            "expr": "sum(aegis_active_connections)",
+            "legendFormat": "connections"
+          }
+        ]
+      },
+      {
+        "title": "Error Rate (per second)",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+        "targets": [
+          {
+            "expr": "sum(rate(aegis_event_errors_total[1m]))",
+            "legendFormat": "errors/sec"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ops",
+            "thresholds": {
+              "steps": [
+                {"value": 0, "color": "green"},
+                {"value": 1, "color": "red"}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "Processing Latency (p95)",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(aegis_processing_duration_seconds_bucket[1m])) by (le))",
+            "legendFormat": "p95 latency"
+          },
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(aegis_processing_duration_seconds_bucket[1m])) by (le))",
+            "legendFormat": "p50 latency"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s"
+          }
+        }
+      },
+      {
+        "title": "Pod Replicas",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 16},
+        "targets": [
+          {
+            "expr": "count(aegis_queue_depth)",
+            "legendFormat": "pods"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          }
+        }
+      },
+      {
+        "title": "Total Events Processed",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 16},
+        "targets": [
+          {
+            "expr": "sum(aegis_events_processed_total)",
+            "legendFormat": "total"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          }
+        }
+      }
+    ],
+    "schemaVersion": 39,
+    "version": 1
+  },
+  "overwrite": true
+}

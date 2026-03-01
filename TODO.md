@@ -56,7 +56,7 @@ Only start these after Phase 1.5 is complete.
 - [x] `Deployment` manifest with env-based config, liveness/readiness probes
 - [x] `Service` manifest (ClusterIP, TCP + metrics ports)
 - [x] `HorizontalPodAutoscaler` based on Prometheus `aegis_queue_depth` metric
-- [ ] Grafana dashboard template for queue depth, throughput, errors
+- [x] Grafana dashboard (7 panels: throughput, queue depth, connections, errors, latency, replicas, total events)
 
 ---
 

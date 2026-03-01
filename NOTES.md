@@ -772,3 +772,35 @@ Scale-down takes ~10 minutes (120s stabilization + 1 pod every 60s)
 4. **Worker count matters as much as pod count.** Reducing from 50 to 1 worker created massive backpressure. Scaling pods helps, but tuning workers per pod is equally important.
 
 5. **`kubectl set env` triggers a rolling restart.** Changing an env var replaces all pods — useful for live config changes, but breaks active connections and port-forwards.
+
+---
+
+### Grafana Dashboard
+
+**What is Grafana?** A visualization tool that connects to data sources (like Prometheus) and displays metrics as charts, graphs, and stats. Prometheus stores the data, Grafana makes it human-readable.
+
+**Connecting Grafana to Prometheus:** Grafana needs a data source URL. Since both run inside the cluster, Grafana uses the K8s internal DNS name:
+```
+http://prometheus-server.monitoring.svc.cluster.local:80
+```
+This is the Service DNS pattern: `<service-name>.<namespace>.svc.cluster.local`.
+
+**Dashboard panels and their PromQL queries:**
+
+| Panel | Query | What it tells you |
+|-------|-------|-------------------|
+| Events/sec | `rate(aegis_events_processed_total[1m])` | Current throughput — is the system under load? |
+| Queue Depth | `sum(aegis_queue_depth)` | Backpressure — are workers keeping up? |
+| Active Connections | `sum(aegis_active_connections)` | How many clients are connected right now? |
+| Error Rate | `rate(aegis_event_errors_total[1m])` | Are events failing to deserialize? |
+| Latency p95 | `histogram_quantile(0.95, ...)` | 95% of events are processed within this time |
+| Pod Replicas | `count(aegis_queue_depth)` | How many pods are running (each pod reports this metric) |
+| Total Events | `sum(aegis_events_processed_total)` | Cumulative count since pods started |
+
+**Key PromQL functions:**
+- `rate(counter[1m])` — converts a counter (only goes up) into a per-second rate over the last 1 minute
+- `sum()` — adds values across all pods
+- `sum() by (label)` — groups the sum by a label (e.g., by event type)
+- `histogram_quantile(0.95, ...)` — calculates the 95th percentile from histogram buckets
+
+**Dashboard as code:** The dashboard is stored as a JSON file (`k8s/grafana-dashboard.json`). This means it's version-controlled and reproducible — anyone can import it into a fresh Grafana instance.
