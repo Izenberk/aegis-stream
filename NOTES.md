@@ -534,6 +534,204 @@ The bench tool parses this with string splitting — simple but effective. In pr
 
 ## Phase 2: Kubernetes Integration
 
+### Kubernetes Fundamentals
+
+#### What is Kubernetes?
+
+Kubernetes (K8s) is a system that manages containers across multiple machines. You tell it *what* you want (e.g., "run 3 copies of my app"), and it figures out *how* — which machine to put each copy on, how to restart them if they crash, how to route traffic to them.
+
+Without K8s, you'd SSH into servers, manually start processes, monitor them yourself, and scramble when things fail. K8s automates all of this.
+
+#### Why does K8s exist?
+
+**The single-server problem:** Your Go binary runs great on one laptop. But in production:
+- What if the server crashes? Your app is down.
+- What if traffic spikes 10x? One server can't handle it.
+- What if you need to deploy a new version? You'd have downtime.
+
+**The many-servers problem:** You could run your binary on 10 servers, but then:
+- How do you decide which server runs what?
+- How do clients know which server to connect to?
+- If server 3 crashes, who restarts the app and redirects traffic?
+
+K8s solves both problems. You describe what you want, K8s makes it happen across any number of machines.
+
+#### How K8s is structured
+
+```
+┌─────────────────────────────────────────┐
+│              Control Plane              │
+│  ┌───────────┐  ┌──────────────────┐    │
+│  │ API Server│  │    Scheduler     │    │
+│  │ (kubectl  │  │ (picks which     │    │
+│  │  talks    │  │  node runs each  │    │
+│  │  to this) │  │  pod)            │    │
+│  └───────────┘  └──────────────────┘    │
+│  ┌──────────────────────────────────┐   │
+│  │  Controller Manager              │   │
+│  │  (watches desired state vs       │   │
+│  │   actual state, fixes gaps)      │   │
+│  └──────────────────────────────────┘   │
+│  ┌──────────────────────────────────┐   │
+│  │  etcd (database storing all      │   │
+│  │  cluster state as key-value)     │   │
+│  └──────────────────────────────────┘   │
+└─────────────────────────────────────────┘
+
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│   Node 1     │  │   Node 2     │  │   Node 3     │
+│  ┌────────┐  │  │  ┌────────┐  │  │  ┌────────┐  │
+│  │ Pod A  │  │  │  │ Pod B  │  │  │  │ Pod D  │  │
+│  │ Pod C  │  │  │  │ Pod E  │  │  │  │ Pod F  │  │
+│  └────────┘  │  │  └────────┘  │  │  └────────┘  │
+│  kubelet     │  │  kubelet     │  │  kubelet     │
+│  (agent)     │  │  (agent)     │  │  (agent)     │
+└──────────────┘  └──────────────┘  └──────────────┘
+```
+
+**Control Plane** — the brain. Decides what runs where.
+**Nodes** — the workers. Machines that actually run your containers.
+**kubelet** — an agent on each node that takes orders from the control plane and manages containers on that node.
+
+In our k3s setup, everything runs on one machine (your laptop). In production, the control plane and nodes would be separate machines.
+
+#### Core K8s objects
+
+Everything in K8s is an "object" described by YAML. Here's how they relate:
+
+```
+Deployment (manages)
+  └── ReplicaSet (created automatically, ensures N pods exist)
+       └── Pod (one or more containers running together)
+            └── Container (your Docker image running)
+
+Service (routes traffic to)
+  └── Pods (found by matching labels)
+
+HPA (scales)
+  └── Deployment (adjusts replica count)
+```
+
+#### Pod — the smallest unit
+
+A Pod is one or more containers that share the same network and storage. In our case, each Pod runs one container (the aegis-stream binary).
+
+**Why Pods, not just containers?** Sometimes related containers need to share resources. For example, a sidecar container that collects logs from the main app. They share `localhost` inside the Pod, so they communicate without networking overhead.
+
+**Pods are ephemeral.** They can be killed and recreated at any time. They get new IP addresses on restart. This is why you never hard-code Pod IPs — you use Services instead.
+
+**Pod lifecycle:**
+```
+Pending → ContainerCreating → Running → Terminating → (deleted)
+```
+- **Pending** — waiting for a node to be assigned
+- **ContainerCreating** — pulling the image, starting the container
+- **Running** — all containers are up and healthy
+- **Terminating** — received SIGTERM, gracefully shutting down
+
+#### Desired state vs actual state
+
+This is the core idea of K8s. You declare what you want:
+```yaml
+replicas: 3    # "I want 3 pods"
+```
+
+K8s continuously compares:
+- **Desired state:** 3 pods running
+- **Actual state:** maybe only 2 pods are running (one crashed)
+- **Action:** start 1 more pod
+
+This loop runs constantly. You never say "start a pod" — you say "I want 3 pods" and K8s figures out the rest. This is called **declarative** configuration (describe the goal) vs **imperative** (describe the steps).
+
+#### Namespaces — organizing your cluster
+
+Namespaces are virtual clusters within your physical cluster. They isolate resources:
+
+| Namespace | What's in it |
+|-----------|-------------|
+| `default` | Your app (aegis-stream) |
+| `monitoring` | Prometheus, Grafana, prometheus-adapter |
+| `kube-system` | K8s internal components (DNS, metrics-server) |
+
+Resources in different namespaces can't see each other by default. That's why Grafana uses the full DNS name `prometheus-server.monitoring.svc.cluster.local` — it needs the namespace (`monitoring`) to cross the boundary.
+
+#### Labels and selectors — how K8s connects things
+
+Labels are key-value tags attached to any K8s object:
+```yaml
+labels:
+  app: aegis-stream
+```
+
+Selectors find objects by their labels:
+```yaml
+selector:
+  matchLabels:
+    app: aegis-stream
+```
+
+This is how everything connects:
+- **Deployment** finds its Pods by label
+- **Service** finds its Pods by label
+- **HPA** finds its Deployment by name
+
+If the labels don't match, things silently fail — traffic doesn't route, scaling doesn't work. Label matching is the most common source of K8s configuration bugs.
+
+#### Rolling updates — zero-downtime deploys
+
+When you change a Deployment (new image, new env var), K8s doesn't kill all pods and restart them. It does a **rolling update**:
+
+```
+1. Start 1 new pod with new config
+2. Wait for it to pass readiness probe
+3. Kill 1 old pod
+4. Repeat until all pods are updated
+```
+
+This means your app stays available during deploys. There's always at least one healthy pod serving traffic. This is why readiness probes matter — K8s won't kill old pods until new ones are confirmed healthy.
+
+#### K8s networking model
+
+Every Pod gets its own IP address. Pods can talk to each other directly by IP — no NAT, no port mapping. But Pod IPs change on restart, so you use Services for stable addresses.
+
+```
+Client (your laptop)
+  │
+  │ kubectl port-forward
+  ▼
+Service (stable DNS name, load balances)
+  │
+  ├──► Pod 1 (10.42.0.15)
+  └──► Pod 2 (10.42.0.16)
+```
+
+**Inside the cluster:** Services get DNS names automatically. Any pod can reach `aegis-stream.default.svc.cluster.local:9000`.
+
+**Outside the cluster:** Three options:
+- `kubectl port-forward` — dev only, creates a tunnel
+- `NodePort` — exposes a port on every node's IP
+- `LoadBalancer` — creates a cloud load balancer (production)
+
+#### Common kubectl commands
+
+| Command | What it does |
+|---------|-------------|
+| `kubectl get pods` | List all pods in the current namespace |
+| `kubectl get pods -w` | Watch pods in real time (updates live) |
+| `kubectl get svc` | List all services |
+| `kubectl get hpa` | List all autoscalers |
+| `kubectl logs <pod>` | View a pod's stdout logs |
+| `kubectl logs -l app=aegis-stream` | View logs for all pods with a label |
+| `kubectl describe pod <pod>` | Detailed info + events (useful for debugging) |
+| `kubectl apply -f file.yaml` | Create or update resources from a file |
+| `kubectl delete -f file.yaml` | Delete resources defined in a file |
+| `kubectl set env deployment/X KEY=VAL` | Change an env var (triggers rolling restart) |
+| `kubectl port-forward svc/X 8080:80` | Tunnel local port to a service |
+| `kubectl get pods -n monitoring` | List pods in a specific namespace |
+| `kubectl rollout status deployment/X` | Wait for a rolling update to finish |
+
+---
+
 ### Multi-stage Dockerfile
 
 **Why multi-stage?** A Go build needs the full toolchain (~800MB). Your production container only needs the compiled binary (~12MB). Multi-stage builds use one image to compile and a second image to run:
