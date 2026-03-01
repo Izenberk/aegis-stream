@@ -2,43 +2,43 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
-	// "fmt"
-	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 
+	"aegis-stream/internal/config"
+	"aegis-stream/internal/frame"
+	"aegis-stream/internal/metrics"
 	"aegis-stream/pb"
 	"google.golang.org/protobuf/proto"
 )
 
-const (
-	Port       = ":9000"
-	WorkerPool = 100
-)
-
-// Job wraps the payload and its underlying buffer pointer
-type Job struct {
-	Data []byte
-	Buf  *[]byte
-}
-
-// bufferPool holds pre-allocated byte slices to prevent GC spikes
-var bufferPool = sync.Pool{
-	New: func() any {
-		// Pre-allocate a generous 4KB buffer for each incoming event
-		b := make([]byte, 4096)
-		return &b
-	},
-}
-
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("bad config", "error", err)
+		os.Exit(1)
+	}
+
+	metrics.Register()
+
+	go func() {
+		slog.Info("metrics server starting", "addr", cfg.MetricsPort)
+		if err := metrics.Serve(cfg.MetricsPort); err != nil {
+			slog.Error("metrics server failed", "error", err)
+			os.Exit(1)
+		}
+	}()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -46,17 +46,30 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	listener, err := net.Listen("tcp", Port)
+	listener, err := net.Listen("tcp", cfg.Port)
 	if err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+		slog.Error("failed to start server", "error", err)
+		os.Exit(1)
 	}
-	log.Printf("Aegis Stream listening on %s (Zero-Copy Enabled)", Port)
+	slog.Info("server started",
+		"port", cfg.Port,
+		"workers", cfg.Workers,
+		"queue_depth", cfg.QueueDepth,
+		"max_conns", cfg.MaxConns,
+		"read_timeout", cfg.ReadTimeout,
+	)
 
-	// Update the channel to use our new Job struct
-	jobs := make(chan Job, 100000)
+	jobs := make(chan []byte, cfg.QueueDepth)
 	var wg sync.WaitGroup
 
-	for i := 0; i < WorkerPool; i++ {
+	// connSem is a counting semaphore that limits simultaneous connections.
+	// A buffered channel of empty structs acts as a semaphore:
+	//   - Send to acquire a slot (blocks if full = at max connections)
+	//   - Receive to release a slot
+	// This prevents file descriptor exhaustion under heavy load.
+	connSem := make(chan struct{}, cfg.MaxConns)
+
+	for i := 0; i < cfg.Workers; i++ {
 		wg.Add(1)
 		go worker(&wg, i, jobs)
 	}
@@ -69,27 +82,52 @@ func main() {
 				case <-ctx.Done():
 					return
 				default:
-					log.Printf("Failed to accept connection: %v", err)
+					slog.Warn("failed to accept connection", "error", err)
 				}
 				continue
 			}
-			go handleConnection(ctx, conn, jobs)
+
+			// Try to acquire a connection slot. If the semaphore is full,
+			// we've hit MaxConns — reject the client immediately.
+			select {
+			case connSem <- struct{}{}:
+				// Slot acquired, handle the connection
+				go handleConnection(ctx, conn, jobs, connSem, cfg.ReadTimeout)
+			default:
+				// At capacity — close the connection so the client knows to retry.
+				// Better to reject fast than to let the OS queue connections silently.
+				slog.Warn("connection rejected, at max capacity",
+					"remote", conn.RemoteAddr().String(),
+					"max_conns", cfg.MaxConns,
+				)
+				conn.Close()
+			}
 		}
 	}()
 
 	<-sigCh
-	log.Println("\nShutdown signal received! Initiating graceful shutdown...")
+	slog.Info("shutdown signal received")
+
+	metrics.SetShutdown()
 
 	listener.Close()
 	cancel()
 	close(jobs)
 
 	wg.Wait()
-	log.Println("All workers drained. Server safely stopped.")
+	slog.Info("all workers drained, server stopped")
 }
 
-func handleConnection(ctx context.Context, conn net.Conn, jobs chan<- Job) {
+func handleConnection(ctx context.Context, conn net.Conn, jobs chan<- []byte, connSem <-chan struct{}, readTimeout time.Duration) {
 	defer conn.Close()
+	defer func() { <-connSem }() // Release the semaphore slot when this connection ends
+
+	metrics.ActiveConnections.Inc()
+	defer metrics.ActiveConnections.Dec()
+
+	remote := conn.RemoteAddr().String()
+	slog.Info("client connected", "remote", remote)
+	defer slog.Info("client disconnected", "remote", remote)
 
 	for {
 		select {
@@ -98,50 +136,82 @@ func handleConnection(ctx context.Context, conn net.Conn, jobs chan<- Job) {
 		default:
 		}
 
-		lengthBuf := make([]byte, 4)
-		if _, err := io.ReadFull(conn, lengthBuf); err != nil {
+		// SetReadDeadline tells the OS: "if no data arrives within this duration,
+		// return a timeout error." This prevents a slow or stalled client from
+		// holding a goroutine (and a connection slot) forever.
+		// The deadline resets on every iteration — each frame gets a fresh window.
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
+
+		data, err := frame.Read(conn)
+		if err != nil {
+			// Don't log timeout errors as warnings — they're expected when
+			// idle clients get cleaned up. Only unexpected errors matter.
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				slog.Info("client timed out", "remote", remote, "timeout", readTimeout)
+			}
 			return
 		}
-		msgLen := binary.BigEndian.Uint32(lengthBuf)
 
-		// 1. Borrow a buffer from the pool
-		bufPtr := bufferPool.Get().(*[]byte)
-
-		// 2. Slice it to the exact length of the incoming message
-		msgBuf := (*bufPtr)[:msgLen]
-		if _, err := io.ReadFull(conn, msgBuf); err != nil {
-			log.Printf("Failed to read complete payload: %v", err)
-			return
+		// Backpressure warning: if the queue is more than 80% full, log a warning.
+		// This is an early signal that workers can't keep up — time to scale in K8s.
+		queueLen := len(jobs)
+		queueCap := cap(jobs)
+		metrics.QueueDepth.Set(float64(queueLen))
+		if queueLen > queueCap*80/100 {
+			slog.Warn("queue backpressure",
+				"depth", queueLen,
+				"capacity", queueCap,
+				"percent", queueLen*100/queueCap,
+			)
 		}
 
-		// 3. Send the job, including the pointer so the worker can return it
-		jobs <- Job{Data: msgBuf, Buf: bufPtr}
+		jobs <- data
 	}
 }
 
-func worker(wg *sync.WaitGroup, id int, jobs <-chan Job) {
+func worker(wg *sync.WaitGroup, id int, jobs <-chan []byte) {
 	defer wg.Done()
 
-	for job := range jobs {
+	// recover() catches panics inside this goroutine.
+	// Without this, a panic kills the worker silently — the WaitGroup
+	// never decrements, and the server hangs on shutdown.
+	// With this, the worker logs the panic and exits cleanly.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("worker panic recovered", "worker", id, "panic", r)
+		}
+	}()
+
+	for data := range jobs {
+		start := time.Now()
+
 		var event pb.Event
 
-		if err := proto.Unmarshal(job.Data, &event); err != nil {
-			log.Printf("Worker %d: Failed to unmarshal: %v", id, err)
-			// Ensure we put the buffer back even if it fails
-			bufferPool.Put(job.Buf)
+		if err := proto.Unmarshal(data, &event); err != nil {
+			slog.Error("unmarshal failed", "worker", id, "error", err)
+			metrics.EventErrors.Inc()
 			continue
 		}
 
 		switch payload := event.Payload.(type) {
 		case *pb.Event_Trade:
-			_ = payload
-			// fmt.Printf("[Worker %d] Routed Trade | Symbol: %s | Price: %f\n", id, payload.Trade.Symbol, payload.Trade.Price)
+			metrics.EventsProcessed.WithLabelValues("trade").Inc()
+			slog.Info("routed trade",
+				"worker", id,
+				"symbol", payload.Trade.Symbol,
+				"price", payload.Trade.Price,
+				"volume", payload.Trade.Volume,
+			)
 		case *pb.Event_Log:
-			_ = payload
-			// fmt.Printf("[Worker %d] Routed Log   | Level: %s | Msg: %s\n", id, payload.Log.Level, payload.Log.Message)
+			metrics.EventsProcessed.WithLabelValues("log").Inc()
+			slog.Info("routed log",
+				"worker", id,
+				"level", payload.Log.Level,
+				"message", payload.Log.Message,
+				"service", payload.Log.ServiceName,
+			)
 		}
 
-		// 4. Return the buffer to the pool for the next connection to use
-		bufferPool.Put(job.Buf)
+		metrics.ProcessingDuration.Observe(time.Since(start).Seconds())
 	}
 }

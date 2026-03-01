@@ -1,24 +1,22 @@
 package main
 
 import (
-	"encoding/binary"
 	"log"
 	"net"
 	"time"
 
+	"aegis-stream/internal/frame"
 	"aegis-stream/pb"
 	"google.golang.org/protobuf/proto"
 )
 
 func main() {
-	// Connect to the local TCP server
 	conn, err := net.Dial("tcp", "localhost:9000")
 	if err != nil {
 		log.Fatalf("Failed to connect to Aegis Stream: %v", err)
 	}
 	defer conn.Close()
 
-	// Create a slice of dummy events
 	events := []*pb.Event{
 		{
 			EventId: "evt-001",
@@ -40,25 +38,18 @@ func main() {
 		},
 	}
 
-	// Send them one by one
 	for _, ev := range events {
-		// 1. Serialize the Protobuf struct to binary
 		data, err := proto.Marshal(ev)
 		if err != nil {
 			log.Fatalf("Failed to marshal event: %v", err)
 		}
 
-		// 2. Create the 4-byte length prefix
-		lengthBuf := make([]byte, 4)
-		binary.BigEndian.PutUint32(lengthBuf, uint32(len(data)))
-
-		// 3. Write prefix, then payload
-		conn.Write(lengthBuf)
-		conn.Write(data)
+		// Use the shared frame package instead of inline encoding/binary calls
+		if err := frame.Write(conn, data); err != nil {
+			log.Fatalf("Failed to send frame: %v", err)
+		}
 
 		log.Printf("Sent event: %s", ev.EventId)
-
-		// Pause for 1 second so we can read the server output easily
 		time.Sleep(1 * time.Second)
 	}
 }
