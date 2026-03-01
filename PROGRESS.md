@@ -1,53 +1,77 @@
 # Aegis Stream: Implementation Progress Log
 
-**Last Updated:** February 28, 2026
-**Current State:** Phase 1 (Core Engine) Complete
+**Last Updated:** March 2, 2026
+**Current State:** Phase 2 (K8s Integration) Complete
 **Peak Throughput:** 239,231 events/sec
 
 ---
 
-## 1. Architectural Milestones Achieved
+## 1. Phase 1 — Core Engine (Complete)
 
-The core Go-based routing engine was engineered from scratch, prioritizing zero-allocation data paths and resilient concurrency.
+- [x] Protobuf schema with Trade and Log payloads via `oneof`
+- [x] 4-byte TCP length-prefix framing
+- [x] Worker pool (100 workers) with buffered channel (100,000 depth)
+- [x] Graceful shutdown with signal handling, context, and WaitGroup
 
-- [x] **Binary Protocol:** Implemented Google Protocol Buffers (`schema.proto`) with Trade and Log payloads encapsulated via `oneof`.
-- [x] **Network Framing:** Engineered strict 4-byte TCP Length-Prefix framing to guarantee message boundaries and prevent binary fragmentation.
-- [x] **Concurrency & Routing:** Deployed a fixed worker pool (100 workers) bound to a high-capacity buffered channel (100,000 depth).
-- [x] **Memory Optimization:** Integrated a `sync.Pool` zero-copy architecture (borrowing 4KB slices) to bypass the Go GC Trap.
-- [x] **Graceful Lifecycle:** Integrated `os/signal`, `context`, and `sync.WaitGroup` to safely drain queues during pod evictions.
+## 2. Phase 1.5 — Hardening (Complete)
+
+- [x] Makefile with build, test, bench, proto, docker, clean targets
+- [x] Unit tests for TCP framing (4 tests) and protobuf serialization (3 tests)
+- [x] Integration test (full pipeline: TCP → frame → unmarshal → worker)
+- [x] Configuration via flags and env vars (`internal/config`)
+- [x] Prometheus metrics: events processed, errors, connections, queue depth, latency
+- [x] Health check endpoint (`/healthz`) with 503 on shutdown
+- [x] Structured JSON logging (`log/slog`)
+- [x] Resilience: panic recovery, TCP read deadlines, connection limits, backpressure warnings
+- [x] Benchmark accuracy: server-side verification via Prometheus metrics
+
+## 3. Phase 2 — Kubernetes Integration (Complete)
+
+- [x] Multi-stage Dockerfile (scratch base, 11.8MB image)
+- [x] Image imported into k3s via `docker save` + `k3s ctr images import`
+- [x] Deployment manifest with env config, liveness/readiness probes, Prometheus annotations
+- [x] Service manifest (ClusterIP, TCP + metrics ports)
+- [x] Prometheus + prometheus-adapter installed via Helm
+- [x] HPA scaling on `aegis_queue_depth` (2-10 replicas, tested under load: 2→4→6→8→10)
+- [x] Grafana dashboard (7 panels: throughput, queue depth, connections, errors, latency, replicas, total events)
 
 ---
 
-## 2. Performance Verification
-
-A custom utility (`cmd/bench`) flooded the local TCP socket with a pre-compiled binary frame to test raw throughput without client-side serialization bottlenecks.
-
-- **Target Throughput:** 100,000 events/sec
-- **Actual Throughput:** 239,231 events/sec
-- **Test Duration:** 418 milliseconds (to process 100,000 events)
-
----
-
-## 3. Current Codebase Structure
-
-Refactored into a production-grade, standard Go layout.
+## 4. Current Codebase Structure
 
 ```text
 aegis-stream/
 ├── cmd/
-│   ├── bench/main.go
-│   ├── client/main.go
-│   └── server/main.go
-├── pb/schema.pb.go
-├── proto/schema.proto
-├── go.mod
-└── go.sum
+│   ├── bench/main.go          # Throughput benchmark with server-side verification
+│   ├── client/main.go         # Test client sending demo events
+│   └── server/main.go         # Main TCP server with metrics and health checks
+├── internal/
+│   ├── config/config.go       # Flags + env var configuration
+│   ├── frame/                 # TCP length-prefix framing (with tests)
+│   ├── metrics/metrics.go     # Prometheus metrics + /healthz endpoint
+│   └── server/                # Integration test
+├── k8s/
+│   ├── deployment.yaml        # Pod template with probes and env config
+│   ├── service.yaml           # ClusterIP service for TCP + metrics
+│   ├── hpa.yaml               # Autoscaler on queue depth
+│   ├── prometheus-adapter-values.yaml
+│   └── grafana-dashboard.json # 7-panel monitoring dashboard
+├── pb/
+│   ├── schema.pb.go           # Generated protobuf code
+│   └── schema_test.go         # Serialization round-trip tests
+├── proto/schema.proto         # Protobuf schema (Trade, Log, Event)
+├── Dockerfile                 # Multi-stage build (11.8MB)
+├── Makefile                   # Build automation
+├── NOTES.md                   # Learning reference
+├── TODO.md                    # Task tracking
+├── PROGRESS.md                # This file
+└── PLAN.md                    # Project vision and roadmap
 ```
 
 ---
 
-## 4. Immediate Next Steps (Phase 2 Initiation)
+## 5. Next Steps (Phase 3)
 
-- [ ] **Containerization:** Write a multi-stage `Dockerfile` to compile a statically linked Go binary on a `scratch` image (Target size: < 20MB).
-- [ ] **Local Registry:** Push the compiled Docker image to a local registry accessible by k3s.
-- [ ] **Kubernetes Manifests:** Write the baseline `Deployment` and `Service` YAML files for the k3s lab.
+- [ ] `AegisPipeline` Custom Resource Definition (CRD)
+- [ ] Go-based Operator (kubebuilder) that provisions workers from YAML
+- [ ] React dashboard for live system health and cost metrics
