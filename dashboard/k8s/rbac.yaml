@@ -4,24 +4,27 @@ metadata:
   name: aegis-dashboard
   namespace: default
 ---
+# Role (not ClusterRole) — scoped to the default namespace only.
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: aegis-dashboard
+  namespace: default
 rules:
   - apiGroups: ["aegis.io"]
     resources: ["aegispipelines"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: aegis-dashboard
+  namespace: default
 subjects:
   - kind: ServiceAccount
     name: aegis-dashboard
     namespace: default
 roleRef:
-  kind: ClusterRole
+  kind: Role
   name: aegis-dashboard
   apiGroup: rbac.authorization.k8s.io

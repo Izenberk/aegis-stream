@@ -29,7 +29,8 @@ func main() {
 	mux.HandleFunc("GET /api/metrics", func(w http.ResponseWriter, r *http.Request) {
 		metrics, err := prom.FetchMetrics()
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			log.Printf("ERROR: fetching metrics: %v", err)
+			http.Error(w, "failed to fetch metrics", http.StatusBadGateway)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -62,7 +63,8 @@ func main() {
 
 		info, err := k8s.FetchPipeline()
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			log.Printf("ERROR: fetching pipeline: %v", err)
+			http.Error(w, "failed to fetch pipeline", http.StatusBadGateway)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -79,10 +81,17 @@ func main() {
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
+	allowedOrigin := envOr("CORS_ORIGIN", "")
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		// Only set CORS headers when an explicit origin is configured (local dev).
+		// In production, Nginx serves both the frontend and proxies /api, so
+		// requests are same-origin and CORS headers are unnecessary.
+		if allowedOrigin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		}
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

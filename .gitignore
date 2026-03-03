@@ -18,3 +18,7 @@ vendor/
 # IDE and OS files
 .vscode/
 .DS_Store
+
+# Environment files (may contain secrets)
+.env
+.env.*
