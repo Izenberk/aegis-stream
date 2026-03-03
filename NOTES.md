@@ -1002,3 +1002,196 @@ This is the Service DNS pattern: `<service-name>.<namespace>.svc.cluster.local`.
 - `histogram_quantile(0.95, ...)` — calculates the 95th percentile from histogram buckets
 
 **Dashboard as code:** The dashboard is stored as a JSON file (`k8s/grafana-dashboard.json`). This means it's version-controlled and reproducible — anyone can import it into a fresh Grafana instance.
+
+---
+
+## Phase 3: Kubernetes Operator
+
+### What Is an Operator?
+
+**The problem:** In Phase 2, we created K8s resources by hand — writing `deployment.yaml`, `service.yaml`, `hpa.yaml`, and applying them with `kubectl apply`. If someone wants to deploy a second aegis-stream pipeline with different settings, they'd have to duplicate and edit all those YAML files. This doesn't scale.
+
+**The solution:** An Operator is a program that runs inside K8s and automates the management of a complex application. Instead of users managing Deployments + Services + HPAs separately, they write **one** custom YAML describing what they want:
+
+```yaml
+apiVersion: stream.aegis.io/v1alpha1
+kind: AegisPipeline
+metadata:
+  name: aegis-demo
+spec:
+  replicas: 2
+  workers: 50
+  queueDepth: 100000
+```
+
+The Operator reads this and creates all the low-level resources automatically. Think of it as: **the user describes the "what", the Operator handles the "how".**
+
+**Real-world analogy:** A thermostat is an operator. You set the desired temperature (desired state). The thermostat constantly checks the actual temperature (actual state) and turns the heater on/off to close the gap. You don't manually control the heater — the thermostat operates it for you.
+
+---
+
+### CRD (Custom Resource Definition)
+
+**What:** A CRD extends the K8s API with a new resource type. Once you install our CRD, K8s understands `AegisPipeline` the same way it understands `Deployment` or `Service`. You can use `kubectl get aegispipelines`, `kubectl describe`, `kubectl delete`, etc.
+
+**Two parts to a CRD:**
+
+1. **The CRD YAML** (`config/crd/bases/stream.aegis.io_aegispipelines.yaml`) — tells K8s the schema: what fields exist, their types, validation rules. This is generated automatically from the Go types by `controller-gen`.
+
+2. **The Go types** (`api/v1alpha1/aegispipeline_types.go`) — the source of truth. You define your spec as a Go struct and use kubebuilder marker comments for validation:
+
+```go
+// +kubebuilder:validation:Minimum=1
+// +kubebuilder:validation:Maximum=20
+// +kubebuilder:default=2
+Replicas int32 `json:"replicas"`
+```
+
+These markers generate OpenAPI validation in the CRD YAML. K8s will reject a CR with `replicas: 0` or `replicas: 25` before the operator even sees it.
+
+**Spec vs Status pattern:**
+- **Spec** = desired state (what the user writes)
+- **Status** = observed state (what the operator writes back)
+
+This separation is fundamental in K8s. Users control Spec, controllers control Status. They never cross.
+
+**`json:` struct tags** — K8s stores everything as JSON in etcd. The struct tags control the JSON field names. `omitempty` means "don't include this field if it's zero/nil" (saves storage). `omitzero` is a newer variant that also omits zero-value structs.
+
+---
+
+### Kubebuilder
+
+**What:** A CLI tool that generates the boilerplate for building operators. Writing an operator from scratch requires ~2000 lines of setup code (API registration, scheme builders, manager configuration, RBAC, Dockerfiles, Makefiles). Kubebuilder generates all of this so you can focus on the **reconciliation logic** — the part that actually matters.
+
+**Key commands we used:**
+```bash
+# Scaffold the project — creates go.mod, Makefile, main.go, Dockerfile, etc.
+kubebuilder init --domain aegis.io --repo aegis-stream/operator
+
+# Create a new API (CRD types) and controller
+kubebuilder create api --group stream --version v1alpha1 --kind AegisPipeline
+```
+
+**What `--group`, `--version`, `--kind` mean:**
+- **Group** (`stream`) — a namespace for your API, like a Java package. Combined with domain: `stream.aegis.io`
+- **Version** (`v1alpha1`) — API version. `v1alpha1` means "experimental, may change". Progresses to `v1beta1` then `v1` as it stabilizes
+- **Kind** (`AegisPipeline`) — the resource type name. This becomes what you use in `kind:` in YAML
+
+Together they form the full API: `stream.aegis.io/v1alpha1/AegisPipeline`
+
+**Generated code we regenerate with `make`:**
+- `make generate` — runs `controller-gen` to regenerate `zz_generated.deepcopy.go`. Every K8s object must implement `DeepCopyObject()` so the API server can safely copy objects. This is pure boilerplate — the tool generates it from your struct definitions.
+- `make manifests` — runs `controller-gen` to generate CRD YAML (from struct tags + markers) and RBAC ClusterRole YAML (from `+kubebuilder:rbac` comments).
+
+---
+
+### The Reconciliation Loop
+
+**This is the core concept of K8s operators.** The Reconcile function is called every time something relevant changes — a CR is created, updated, or deleted, or a child resource (Deployment, Service) changes.
+
+**Level-triggered vs edge-triggered:**
+- **Edge-triggered** = "react when something happens" (event-driven). Problem: if you miss an event, you're out of sync forever.
+- **Level-triggered** = "compare desired vs actual state and fix the gap." Even if you miss 10 events, the next reconciliation still converges to the right state.
+
+K8s operators are level-triggered. The Reconcile function doesn't ask "what event happened?" — it asks "what should exist, and does it?"
+
+**Our Reconcile flow (5 steps):**
+
+```
+User applies AegisPipeline CR
+         │
+         ▼
+Step 1: Fetch the CR
+         │ (if deleted → return, garbage collection handles cleanup)
+         ▼
+Step 2: Build desired Deployment from CR spec
+         │
+         ▼
+Step 3: CreateOrUpdate Deployment
+         │ (idempotent: create if missing, update if different, skip if same)
+         ▼
+Step 4: CreateOrUpdate Service
+         │ (same pattern, preserves immutable ClusterIP)
+         ▼
+Step 5: Update CR status (readyReplicas, phase)
+```
+
+**`CreateOrUpdate` pattern:**
+This is the idempotent reconciliation primitive. It:
+1. Tries to get the existing resource
+2. If not found → creates it
+3. If found → calls your mutate function, then updates if changed
+
+The mutate function is where you set the fields you care about. You don't build the entire object from scratch because K8s adds its own fields (resourceVersion, uid, status, etc.) that you must preserve.
+
+---
+
+### Owner References and Garbage Collection
+
+**The problem:** If a user deletes their AegisPipeline CR, the Deployment and Service it created should also be deleted. Without automation, these would become orphans — running pods with no parent to manage them.
+
+**The solution:** When the controller creates a Deployment, it sets an `ownerReference` pointing back to the AegisPipeline CR:
+
+```go
+controllerutil.SetControllerReference(&pipeline, &deploy, r.Scheme)
+```
+
+This tells K8s: "this Deployment is owned by this AegisPipeline." When the owner is deleted, K8s automatically deletes all owned resources. This is called **cascading deletion** — same concept as `ON DELETE CASCADE` in SQL foreign keys.
+
+**Why `SetControllerReference` not `SetOwnerReference`?** The "controller" variant also marks this owner as the *managing* controller, which means:
+- Only one controller can be the managing owner (prevents conflicts)
+- The controller gets watch events when owned resources change
+
+---
+
+### RBAC Markers
+
+The controller needs K8s API permissions to create Deployments and Services. These are declared via comment markers:
+
+```go
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+```
+
+`make manifests` reads these comments and generates a ClusterRole YAML. Key details:
+- `groups=apps` — Deployments live in the `apps` API group
+- `groups=""` — Services live in the core API group (empty string)
+- `verbs` — the actions the operator is allowed to take
+
+Without these, the operator would get "Forbidden" errors when trying to create resources. K8s denies by default — you must explicitly grant every permission.
+
+---
+
+### Owns() — Watching Child Resources
+
+In `SetupWithManager`, we declare what the controller watches:
+
+```go
+ctrl.NewControllerManagedBy(mgr).
+    For(&streamv1alpha1.AegisPipeline{}).  // watch CRs
+    Owns(&appsv1.Deployment{}).             // watch owned Deployments
+    Owns(&corev1.Service{}).                // watch owned Services
+    Complete(r)
+```
+
+- `For()` — primary watch. Any change to an AegisPipeline CR triggers Reconcile.
+- `Owns()` — secondary watch. If someone manually deletes a Deployment that our operator created, the controller detects it and recreates it. This is the **self-healing** property of operators.
+
+The Owns() watch works because of ownerReferences — K8s can look up the owner CR from the Deployment's metadata and trigger Reconcile for that specific CR.
+
+---
+
+### Spec-to-Env-Var Mapping
+
+The operator bridges the gap between the CRD and our aegis-stream server binary. The server reads config from environment variables (via `internal/config`). The operator translates CRD fields to env vars:
+
+| CRD Field | Env Var | What it controls |
+|-----------|---------|------------------|
+| `spec.replicas` | (Deployment replicas) | Number of pods |
+| `spec.workers` | `AEGIS_WORKERS` | Worker goroutines per pod |
+| `spec.queueDepth` | `AEGIS_QUEUE_DEPTH` | Buffered channel capacity |
+| `spec.port` | `AEGIS_PORT` | TCP listen port |
+| `spec.metricsPort` | `AEGIS_METRICS_PORT` | Prometheus/health port |
+| `spec.image` | (Container image) | Which container to run |
+
+This means the same server binary we built in Phase 1 runs unchanged. The operator just configures it differently per CR.

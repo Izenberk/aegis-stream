@@ -1,0 +1,14 @@
+# Example AegisPipeline CR — apply this to create an aegis-stream deployment.
+# The operator watches for this resource and creates a Deployment + Service.
+apiVersion: stream.aegis.io/v1alpha1
+kind: AegisPipeline
+metadata:
+  name: aegis-demo
+spec:
+  replicas: 2
+  image: "docker.io/library/aegis-stream:latest"
+  workers: 50
+  queueDepth: 100000
+  port: 9000
+  metricsPort: 2112
+  costPerPodHour: "0.05"

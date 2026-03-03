@@ -62,8 +62,8 @@ Only start these after Phase 1.5 is complete.
 
 ## Phase 3 — Kubernetes Operator
 
-- [ ] `AegisPipeline` Custom Resource Definition (CRD)
-- [ ] Go-based Operator (kubebuilder) that provisions workers from YAML
+- [x] `AegisPipeline` Custom Resource Definition (CRD)
+- [x] Go-based Operator (kubebuilder) that provisions workers from YAML
 - [ ] React dashboard for live system health and cost metrics
 
 ---

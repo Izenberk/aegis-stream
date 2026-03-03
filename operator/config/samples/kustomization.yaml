@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- stream_v1alpha1_aegispipeline.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

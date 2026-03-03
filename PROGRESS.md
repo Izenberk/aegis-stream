@@ -1,7 +1,7 @@
 # Aegis Stream: Implementation Progress Log
 
-**Last Updated:** March 2, 2026
-**Current State:** Phase 2 (K8s Integration) Complete
+**Last Updated:** March 3, 2026
+**Current State:** Phase 3 (Operator) In Progress
 **Peak Throughput:** 239,231 events/sec
 
 ---
@@ -35,9 +35,20 @@
 - [x] HPA scaling on `aegis_queue_depth` (2-10 replicas, tested under load: 2→4→6→8→10)
 - [x] Grafana dashboard (7 panels: throughput, queue depth, connections, errors, latency, replicas, total events)
 
+## 4. Phase 3 — Kubernetes Operator (In Progress)
+
+- [x] Kubebuilder scaffold (`kubebuilder init` + `kubebuilder create api`)
+- [x] AegisPipeline CRD types (Spec: replicas, image, workers, queueDepth, port, metricsPort, costPerPodHour)
+- [x] Controller reconciliation loop (creates/updates Deployment + Service from CR)
+- [x] Owner references for garbage collection (delete CR → auto-deletes children)
+- [x] Self-healing via Owns() watch (recreates deleted Deployments/Services)
+- [x] Status reporting (readyReplicas, phase: Running/Pending)
+- [x] CRD installed in k3s, operator tested: CR → Deployment + Service + live scaling
+- [ ] React dashboard for live system health and cost metrics
+
 ---
 
-## 4. Current Codebase Structure
+## 5. Current Codebase Structure
 
 ```text
 aegis-stream/
@@ -56,6 +67,12 @@ aegis-stream/
 │   ├── hpa.yaml               # Autoscaler on queue depth
 │   ├── prometheus-adapter-values.yaml
 │   └── grafana-dashboard.json # 7-panel monitoring dashboard
+├── operator/                   # Kubebuilder operator (Phase 3)
+│   ├── api/v1alpha1/           # CRD types (AegisPipelineSpec, Status)
+│   ├── internal/controller/    # Reconciliation loop
+│   ├── config/                 # Generated CRD, RBAC, samples
+│   ├── cmd/main.go             # Operator entry point
+│   └── Makefile                # Operator build automation
 ├── pb/
 │   ├── schema.pb.go           # Generated protobuf code
 │   └── schema_test.go         # Serialization round-trip tests
@@ -70,8 +87,6 @@ aegis-stream/
 
 ---
 
-## 5. Next Steps (Phase 3)
+## 6. Next Steps
 
-- [ ] `AegisPipeline` Custom Resource Definition (CRD)
-- [ ] Go-based Operator (kubebuilder) that provisions workers from YAML
 - [ ] React dashboard for live system health and cost metrics
