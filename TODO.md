@@ -64,7 +64,7 @@ Only start these after Phase 1.5 is complete.
 
 - [x] `AegisPipeline` Custom Resource Definition (CRD)
 - [x] Go-based Operator (kubebuilder) that provisions workers from YAML
-- [ ] React dashboard for live system health and cost metrics
+- [x] React dashboard for live system health and cost metrics
 
 ---
 

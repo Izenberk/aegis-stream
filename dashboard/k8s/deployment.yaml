@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis-dashboard
+  namespace: default
+  labels:
+    app: aegis-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aegis-dashboard
+  template:
+    metadata:
+      labels:
+        app: aegis-dashboard
+    spec:
+      serviceAccountName: aegis-dashboard
+      containers:
+        # Go API backend
+        - name: api
+          image: aegis-dashboard-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: api
+          env:
+            - name: PROMETHEUS_URL
+              value: "http://prometheus:9090"
+            - name: AEGIS_PIPELINE_NAME
+              value: "aegis-pipeline"
+            - name: AEGIS_NAMESPACE
+              value: "default"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+
+        # Nginx serving React + proxying /api to the Go sidecar
+        - name: web
+          image: aegis-dashboard-web:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            requests:
+              cpu: 25m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi

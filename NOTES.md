@@ -1181,6 +1181,59 @@ The Owns() watch works because of ownerReferences — K8s can look up the owner 
 
 ---
 
+### React Dashboard (Custom UI)
+
+**Why not just Grafana?** Grafana is excellent for ops monitoring, but it has limitations for a learning project:
+1. It can't read K8s custom resources — so we can't show CRD fields like `costPerPodHour`
+2. You can't customize the layout or add computed fields (like cost estimation)
+3. Building a full-stack dashboard teaches React, TypeScript, and API design
+
+**Architecture:**
+```
+Browser (React) → Nginx → Go API → Prometheus + K8s API
+```
+
+The Go backend queries two data sources:
+- **Prometheus** instant query API (`/api/v1/query`) for metrics (same PromQL as Grafana)
+- **K8s dynamic client** for the AegisPipeline CR (spec + status fields)
+
+**Key concepts learned:**
+
+**Vite** — A fast frontend build tool. Unlike Create React App (which bundles with Webpack), Vite serves source files directly during development using native ES modules. This means near-instant hot reloads. For production, it uses Rollup to bundle optimized output.
+
+**Tailwind CSS** — A utility-first CSS framework. Instead of writing `.card { background: gray; padding: 1rem; }`, you write `className="bg-gray-800 p-4"` directly in JSX. Pros: no CSS files to manage, consistent design tokens. Cons: long class strings. For a dashboard with repetitive card layouts, it's very productive.
+
+**Recharts** — A React charting library built on D3 and SVG. Components like `<LineChart>`, `<AreaChart>`, and `<Tooltip>` compose together declaratively. Each chart receives data as a prop and handles rendering, scaling, and interaction internally.
+
+**React Hooks (useState, useEffect, useCallback, useRef):**
+- `useState` — holds data that triggers re-renders when changed (metrics, pipeline info)
+- `useEffect` — runs side effects like setting up polling intervals. The cleanup function (`return () => clearInterval(id)`) prevents memory leaks when the component unmounts
+- `useCallback` — memoizes the fetch function so it doesn't get recreated on every render. Without this, the `useEffect` dependency array would trigger unnecessary re-subscriptions
+- `useRef` — holds the history buffer without triggering re-renders. We use state for the final history (to trigger renders) but ref for the mutable working copy (to avoid stale closures)
+
+**Polling pattern:**
+```typescript
+useEffect(() => {
+  fetchMetrics();                        // immediate first fetch
+  const id = setInterval(fetchMetrics, 5000);  // then every 5s
+  return () => clearInterval(id);        // cleanup on unmount
+}, [fetchMetrics]);
+```
+
+This is simpler than WebSockets for our use case. The 5-second interval matches Prometheus's scrape rate, so faster polling wouldn't give fresher data.
+
+**History buffer:** A fixed-size array of 24 snapshots (2 minutes at 5s intervals) that Recharts renders as time-series charts. New snapshots are appended with `[...history, newSnapshot].slice(-24)`, which keeps only the last 24 entries.
+
+**Cost calculation:** The CRD's `costPerPodHour` field enables real-time cost estimation:
+```
+cost/sec = costPerPodHour × readyReplicas / 3600
+```
+This updates automatically as pods scale up/down, showing the direct cost impact of autoscaling.
+
+**Sidecar container pattern:** The dashboard runs as two containers in one Pod — Nginx (serves React, proxies `/api/*`) and Go (queries Prometheus + K8s). They share `localhost` inside the Pod, so Nginx proxies to `localhost:8080` without network overhead.
+
+---
+
 ### Spec-to-Env-Var Mapping
 
 The operator bridges the gap between the CRD and our aegis-stream server binary. The server reads config from environment variables (via `internal/config`). The operator translates CRD fields to env vars:
