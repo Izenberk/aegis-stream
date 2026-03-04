@@ -5,6 +5,7 @@ build:
 	go build -o bin/client ./cmd/client
 	go build -o bin/bench ./cmd/bench
 	go build -o bin/feed ./cmd/feed
+	go build -o bin/stress ./cmd/stress
 
 run: build
 	./bin/server
