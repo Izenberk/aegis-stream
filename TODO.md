@@ -68,5 +68,30 @@ Only start these after Phase 1.5 is complete.
 
 ---
 
-*Check off items as you complete them. Each task in Phase 1.5 is a learning opportunity — write the Go code yourself, ask for guidance when stuck.*
+## Phase 4 — Real Data Demo
+
+Show Aegis Stream handling real production-like data, not just synthetic benchmarks.
+
+### 1. Live Market Data Feeder (`cmd/feed`)
+- [ ] Connect to Binance public WebSocket (aggTrade stream, no API key needed)
+- [ ] Convert real crypto trades (BTC, ETH, SOL) into aegis-stream protobuf events
+- [ ] Generate mixed payloads: real Trades + synthetic Log events
+- [ ] Reconnect with exponential backoff on disconnect
+- [ ] Configurable via flags/env vars (server address, symbols, log interval)
+
+### 2. Stress Test Tool (`cmd/stress`)
+- [ ] Multi-connection stress test (10+ concurrent TCP connections)
+- [ ] Sustained phase: constant rate for configurable duration
+- [ ] Spike phase: burst at N× multiplier to trigger HPA scale-up
+- [ ] Pre-generated varied payloads (70% Trade, 30% Log, random data)
+- [ ] Live progress reporting + final summary with server-side verification
+
+### 3. End-to-End Validation
+- [ ] Run feed + stress together against k3s cluster
+- [ ] Observe HPA scaling under combined real + synthetic load
+- [ ] Watch React dashboard and Grafana during test
+
+---
+
+*Check off items as you complete them. Each task is a learning opportunity — write the Go code yourself, ask for guidance when stuck.*
 
