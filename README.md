@@ -43,7 +43,9 @@ aegis-stream/
 ├── cmd/
 │   ├── server/       # Main TCP server
 │   ├── client/       # Test client
-│   └── bench/        # Throughput benchmark
+│   ├── bench/        # Throughput benchmark
+│   ├── feed/         # Live Binance market data feeder
+│   └── stress/       # Multi-connection stress test
 ├── internal/
 │   ├── config/       # Flags + env var configuration
 │   ├── frame/        # TCP length-prefix framing
@@ -88,6 +90,27 @@ make run          # starts the TCP server on :9000, metrics on :2112
 ```bash
 make bench        # starts server, blasts 100k events, reports throughput
 ```
+
+### Stream live market data
+
+```bash
+# Terminal 1
+./bin/server
+
+# Terminal 2 — connects to Binance public WebSocket, no API key needed
+./bin/feed
+```
+
+Real BTC, ETH, SOL trades flow through the pipeline at ~60 events/sec.
+
+### Run stress test
+
+```bash
+# With server running:
+./bin/stress -duration 15s -spike-duration 5s -rate 5000 -connections 10
+```
+
+Sends 5,000 events/sec across 10 connections, then spikes to 25,000/sec (5x).
 
 ### Run tests
 
@@ -212,3 +235,4 @@ my-pipeline   3          3       Running   5m
 3. **K8s Integration** — Dockerfile, Deployment, Service, HPA, Grafana dashboard
 4. **Operator** — CRD, kubebuilder controller, reconciliation loop, self-healing
 5. **Dashboard** — Go API proxy, React/Tailwind/Recharts frontend, cost panel
+6. **Real Data** — Binance WebSocket feeder, multi-connection stress test with sustained + spike phases
