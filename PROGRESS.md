@@ -1,7 +1,7 @@
 # Aegis Stream: Implementation Progress Log
 
 **Last Updated:** March 5, 2026
-**Current State:** Phase 4 (Real Data Demo) In Progress
+**Current State:** Phase 4 (Real Data Demo) Complete
 **Peak Throughput:** 239,231 events/sec
 
 ---
@@ -105,8 +105,9 @@ aegis-stream/
 
 ---
 
-## 6. Phase 4 — Real Data Demo (In Progress)
+## 6. Phase 4 — Real Data Demo (Complete)
 
 - [x] Live market data feeder (`cmd/feed`) — Binance WebSocket → aegis-stream (~60 trades/sec from 3 symbols)
 - [x] Stress test tool (`cmd/stress`) — multi-connection sustained + spike load (tested: 5 conns, 3k/s + 15k/s spike, 0% loss)
-- [ ] End-to-end validation in k3s with HPA scaling under real data
+- [x] End-to-end validation in k3s — HPA scaled 2→5 pods under backpressure (5 workers, 10ms delay, 5k events/sec)
+- [x] Configurable processing delay (`AEGIS_PROCESS_DELAY`) for realistic HPA testing

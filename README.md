@@ -178,6 +178,7 @@ The server reads config from flags and environment variables (env vars take prio
 | `AEGIS_QUEUE_DEPTH` | `100000` | Buffered channel capacity |
 | `AEGIS_MAX_CONNS` | `1000` | Max simultaneous TCP connections |
 | `AEGIS_READ_TIMEOUT` | `30s` | TCP read deadline per frame |
+| `AEGIS_PROCESS_DELAY` | `0` | Per-event processing delay to simulate I/O (e.g. `10ms`) |
 
 ## AegisPipeline CRD
 

@@ -363,3 +363,4 @@ func waitForDrain(metricsURL string, beforeCount, expected int64) int64 {
 	}
 	return queryProcessedCount(metricsURL)
 }
+

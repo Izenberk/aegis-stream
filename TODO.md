@@ -87,9 +87,9 @@ Show Aegis Stream handling real production-like data, not just synthetic benchma
 - [x] Live progress reporting + final summary with server-side verification
 
 ### 3. End-to-End Validation
-- [ ] Run feed + stress together against k3s cluster
-- [ ] Observe HPA scaling under combined real + synthetic load
-- [ ] Watch React dashboard and Grafana during test
+- [x] Run feed + stress together against k3s cluster
+- [x] Observe HPA scaling under combined real + synthetic load
+- [x] Watch React dashboard and Grafana during test
 
 ---
 

@@ -16,8 +16,9 @@ type Config struct {
 	MetricsPort string        // HTTP address for Prometheus /metrics endpoint
 	Workers     int           // Number of worker goroutines in the pool
 	QueueDepth  int           // Buffered channel capacity (backpressure threshold)
-	MaxConns    int           // Maximum simultaneous TCP connections (0 = unlimited)
-	ReadTimeout time.Duration // How long to wait for data before dropping a slow client
+	MaxConns     int           // Maximum simultaneous TCP connections (0 = unlimited)
+	ReadTimeout  time.Duration // How long to wait for data before dropping a slow client
+	ProcessDelay time.Duration // Artificial per-event delay to simulate real I/O (0 = none)
 }
 
 // Load reads configuration with this priority (highest wins):
@@ -37,6 +38,7 @@ func Load() (*Config, error) {
 	flag.IntVar(&cfg.QueueDepth, "queue-depth", 100000, "Job channel buffer size")
 	flag.IntVar(&cfg.MaxConns, "max-conns", 1000, "Max simultaneous TCP connections")
 	flag.DurationVar(&cfg.ReadTimeout, "read-timeout", 30*time.Second, "TCP read deadline per frame")
+	flag.DurationVar(&cfg.ProcessDelay, "process-delay", 0, "Per-event processing delay to simulate I/O (e.g. 5ms)")
 	flag.Parse()
 
 	// Step 2: If an env var is set, it overrides the flag value.
@@ -75,6 +77,13 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid AEGIS_READ_TIMEOUT %q: %w", v, err)
 		}
 		cfg.ReadTimeout = d
+	}
+	if v, ok := os.LookupEnv("AEGIS_PROCESS_DELAY"); ok {
+		d, err := time.ParseDuration(v) // e.g. "5ms", "10ms"
+		if err != nil {
+			return nil, fmt.Errorf("invalid AEGIS_PROCESS_DELAY %q: %w", v, err)
+		}
+		cfg.ProcessDelay = d
 	}
 
 	// Step 3: Validate — catch bad config before the server starts,

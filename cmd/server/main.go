@@ -57,6 +57,7 @@ func main() {
 		"queue_depth", cfg.QueueDepth,
 		"max_conns", cfg.MaxConns,
 		"read_timeout", cfg.ReadTimeout,
+		"process_delay", cfg.ProcessDelay,
 	)
 
 	jobs := make(chan []byte, cfg.QueueDepth)
@@ -71,7 +72,7 @@ func main() {
 
 	for i := 0; i < cfg.Workers; i++ {
 		wg.Add(1)
-		go worker(&wg, i, jobs)
+		go worker(&wg, i, jobs, cfg.ProcessDelay)
 	}
 
 	go func() {
@@ -169,7 +170,7 @@ func handleConnection(ctx context.Context, conn net.Conn, jobs chan<- []byte, co
 	}
 }
 
-func worker(wg *sync.WaitGroup, id int, jobs <-chan []byte) {
+func worker(wg *sync.WaitGroup, id int, jobs <-chan []byte, processDelay time.Duration) {
 	defer wg.Done()
 
 	// recover() catches panics inside this goroutine.
@@ -210,6 +211,12 @@ func worker(wg *sync.WaitGroup, id int, jobs <-chan []byte) {
 				"message", payload.Log.Message,
 				"service", payload.Log.ServiceName,
 			)
+		}
+
+		// Simulate real-world processing time (e.g. DB write, HTTP call).
+		// Set AEGIS_PROCESS_DELAY=5ms to create artificial backpressure for HPA testing.
+		if processDelay > 0 {
+			time.Sleep(processDelay)
 		}
 
 		metrics.ProcessingDuration.Observe(time.Since(start).Seconds())
