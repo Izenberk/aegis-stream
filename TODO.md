@@ -93,5 +93,51 @@ Show Aegis Stream handling real production-like data, not just synthetic benchma
 
 ---
 
+## Phase 5 — Sink Interface + PostgreSQL
+
+Route processed events to real storage instead of stdout. Prove the full loop: ingest → process → store → query.
+
+### 1. Sink Interface (`internal/sink`)
+- [ ] Define `Sink` interface: `Write(event *pb.Event) error` + `Close() error`
+- [ ] Implement `StdoutSink` (current behavior, extracted into interface)
+- [ ] Wire sink into worker loop, replacing direct `slog.Info` calls
+- [ ] Make sink selectable via config/env var (`AEGIS_SINK=stdout|postgres`)
+
+### 2. PostgreSQL Sink
+- [ ] Design schema: `trades` table (symbol, price, volume, timestamp) + `logs` table (level, message, service, timestamp)
+- [ ] Implement `PostgresSink` using `pgx` (Go Postgres driver)
+- [ ] Batch inserts for throughput (flush every N events or M milliseconds)
+- [ ] Connection pooling and retry logic
+- [ ] Add `AEGIS_POSTGRES_URL` env var for connection string
+
+### 3. PostgreSQL in K8s
+- [ ] Deploy PostgreSQL to k3s (StatefulSet or Helm chart)
+- [ ] Update aegis-stream Deployment with `AEGIS_SINK=postgres` and DB connection
+- [ ] Update AegisPipeline CRD to support sink configuration
+
+### 4. Dashboard Integration
+- [ ] Add `/api/trades` endpoint to dashboard API (query stored trades)
+- [ ] Add a trades table/view to the React dashboard
+- [ ] Show recent trades flowing through the pipeline in real time
+
+### 5. End-to-End Validation
+- [ ] Run feed → aegis-stream → PostgreSQL with live Binance data
+- [ ] Query stored trades from dashboard
+- [ ] Verify data integrity (events in = rows stored)
+
+---
+
+## Phase 6 — Service-to-Service (Future)
+
+- [ ] Kafka/NATS sink for fan-out to multiple consumers
+- [ ] Consumer services (alerting, analytics, archival)
+
+## Phase 7 — Cloud Deployment (Future)
+
+- [ ] Deploy to real cloud K8s (EKS/GKE or VPS with k3s)
+- [ ] Production TLS, auth, and networking
+
+---
+
 *Check off items as you complete them. Each task is a learning opportunity — write the Go code yourself, ask for guidance when stuck.*
 

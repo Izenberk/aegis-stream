@@ -1,7 +1,7 @@
 # Aegis Stream: Implementation Progress Log
 
-**Last Updated:** March 5, 2026
-**Current State:** Phase 4 (Real Data Demo) Complete
+**Last Updated:** March 9, 2026
+**Current State:** Phase 5 (Sink Interface + PostgreSQL) Planned
 **Peak Throughput:** 239,231 events/sec
 
 ---
@@ -111,3 +111,16 @@ aegis-stream/
 - [x] Stress test tool (`cmd/stress`) — multi-connection sustained + spike load (tested: 5 conns, 3k/s + 15k/s spike, 0% loss)
 - [x] End-to-end validation in k3s — HPA scaled 2→5 pods under backpressure (5 workers, 10ms delay, 5k events/sec)
 - [x] Configurable processing delay (`AEGIS_PROCESS_DELAY`) for realistic HPA testing
+
+---
+
+## 7. Phase 5 — Sink Interface + PostgreSQL (Planned)
+
+Route processed events to real storage. Currently workers log to stdout — this phase adds a pluggable Sink interface so data flows to PostgreSQL (or any future destination).
+
+- [ ] Sink interface (`internal/sink`): `Write(event) error`, `Close() error`
+- [ ] StdoutSink (extract current behavior)
+- [ ] PostgresSink with batch inserts via `pgx`
+- [ ] PostgreSQL deployed to k3s
+- [ ] Dashboard shows stored trades
+- [ ] Full loop validated: Binance → pipeline → PostgreSQL → dashboard
