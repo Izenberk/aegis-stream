@@ -58,7 +58,7 @@ func (c *Client) FetchMetrics() (*Metrics, error) {
 	}
 
 	// Events per second by type
-	resp, err := c.query(`sum(rate(aegis_events_processed_total[1m])) by (type)`)
+	resp, err := c.query(`sum(rate(aegis_events_processed_total[5m])) by (type)`)
 	if err != nil {
 		return nil, fmt.Errorf("events/sec query: %w", err)
 	}
@@ -90,7 +90,7 @@ func (c *Client) FetchMetrics() (*Metrics, error) {
 	}
 
 	// Error rate
-	resp, err = c.query(`sum(rate(aegis_event_errors_total[1m]))`)
+	resp, err = c.query(`sum(rate(aegis_event_errors_total[5m]))`)
 	if err != nil {
 		return nil, fmt.Errorf("error rate query: %w", err)
 	}
@@ -99,7 +99,7 @@ func (c *Client) FetchMetrics() (*Metrics, error) {
 	}
 
 	// Latency P50
-	resp, err = c.query(`histogram_quantile(0.50, sum(rate(aegis_processing_duration_seconds_bucket[1m])) by (le))`)
+	resp, err = c.query(`histogram_quantile(0.50, sum(rate(aegis_processing_duration_seconds_bucket[5m])) by (le))`)
 	if err != nil {
 		return nil, fmt.Errorf("p50 query: %w", err)
 	}
@@ -108,7 +108,7 @@ func (c *Client) FetchMetrics() (*Metrics, error) {
 	}
 
 	// Latency P95
-	resp, err = c.query(`histogram_quantile(0.95, sum(rate(aegis_processing_duration_seconds_bucket[1m])) by (le))`)
+	resp, err = c.query(`histogram_quantile(0.95, sum(rate(aegis_processing_duration_seconds_bucket[5m])) by (le))`)
 	if err != nil {
 		return nil, fmt.Errorf("p95 query: %w", err)
 	}
