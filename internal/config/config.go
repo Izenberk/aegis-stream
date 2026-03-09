@@ -19,6 +19,12 @@ type Config struct {
 	MaxConns     int           // Maximum simultaneous TCP connections (0 = unlimited)
 	ReadTimeout  time.Duration // How long to wait for data before dropping a slow client
 	ProcessDelay time.Duration // Artificial per-event delay to simulate real I/O (0 = none)
+
+	// Sink configuration: where processed events are routed.
+	// "stdout" = log to console (default, zero dependencies)
+	// "postgres" = write to PostgreSQL (requires AEGIS_POSTGRES_URL)
+	SinkType    string // "stdout" or "postgres"
+	PostgresURL string // e.g. "postgres://aegis:aegis@localhost:5433/aegis"
 }
 
 // Load reads configuration with this priority (highest wins):
@@ -39,6 +45,8 @@ func Load() (*Config, error) {
 	flag.IntVar(&cfg.MaxConns, "max-conns", 1000, "Max simultaneous TCP connections")
 	flag.DurationVar(&cfg.ReadTimeout, "read-timeout", 30*time.Second, "TCP read deadline per frame")
 	flag.DurationVar(&cfg.ProcessDelay, "process-delay", 0, "Per-event processing delay to simulate I/O (e.g. 5ms)")
+	flag.StringVar(&cfg.SinkType, "sink", "stdout", "Event sink type: stdout or postgres")
+	flag.StringVar(&cfg.PostgresURL, "postgres-url", "", "PostgreSQL connection string (required when sink=postgres)")
 	flag.Parse()
 
 	// Step 2: If an env var is set, it overrides the flag value.
@@ -85,6 +93,14 @@ func Load() (*Config, error) {
 		}
 		cfg.ProcessDelay = d
 	}
+	// Sink config: AEGIS_SINK selects the destination, AEGIS_POSTGRES_URL provides the connection.
+	// In K8s, you'd set these in the Deployment manifest or the AegisPipeline CR.
+	if v, ok := os.LookupEnv("AEGIS_SINK"); ok {
+		cfg.SinkType = v
+	}
+	if v, ok := os.LookupEnv("AEGIS_POSTGRES_URL"); ok {
+		cfg.PostgresURL = v
+	}
 
 	// Step 3: Validate — catch bad config before the server starts,
 	// not minutes later when something silently breaks.
@@ -108,6 +124,18 @@ func (c *Config) validate() error {
 	}
 	if c.ReadTimeout < 0 {
 		return fmt.Errorf("read-timeout must be non-negative, got %v", c.ReadTimeout)
+	}
+	// Validate sink: only "stdout" and "postgres" are supported.
+	// If postgres is selected, a connection URL is required.
+	switch c.SinkType {
+	case "stdout":
+		// No extra config needed.
+	case "postgres":
+		if c.PostgresURL == "" {
+			return fmt.Errorf("sink=postgres requires AEGIS_POSTGRES_URL or -postgres-url")
+		}
+	default:
+		return fmt.Errorf("unknown sink type %q (supported: stdout, postgres)", c.SinkType)
 	}
 	return nil
 }

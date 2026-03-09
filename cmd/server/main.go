@@ -14,6 +14,7 @@ import (
 	"aegis-stream/internal/config"
 	"aegis-stream/internal/frame"
 	"aegis-stream/internal/metrics"
+	"aegis-stream/internal/sink"
 	"aegis-stream/pb"
 	"google.golang.org/protobuf/proto"
 )
@@ -60,6 +61,25 @@ func main() {
 		"process_delay", cfg.ProcessDelay,
 	)
 
+	// Create the event sink based on config.
+	// The sink is where processed events end up — stdout for dev, postgres for production.
+	// Using the Sink interface means workers don't know or care which one they're writing to.
+	var eventSink sink.Sink
+	switch cfg.SinkType {
+	case "postgres":
+		s, err := sink.NewPostgres(cfg.PostgresURL)
+		if err != nil {
+			slog.Error("failed to connect to postgres", "error", err)
+			os.Exit(1)
+		}
+		eventSink = s
+	default:
+		eventSink = sink.NewStdout()
+	}
+	defer eventSink.Close()
+
+	slog.Info("sink configured", "type", cfg.SinkType)
+
 	jobs := make(chan []byte, cfg.QueueDepth)
 	var wg sync.WaitGroup
 
@@ -72,7 +92,7 @@ func main() {
 
 	for i := 0; i < cfg.Workers; i++ {
 		wg.Add(1)
-		go worker(&wg, i, jobs, cfg.ProcessDelay)
+		go worker(&wg, i, jobs, cfg.ProcessDelay, eventSink)
 	}
 
 	go func() {
@@ -170,7 +190,7 @@ func handleConnection(ctx context.Context, conn net.Conn, jobs chan<- []byte, co
 	}
 }
 
-func worker(wg *sync.WaitGroup, id int, jobs <-chan []byte, processDelay time.Duration) {
+func worker(wg *sync.WaitGroup, id int, jobs <-chan []byte, processDelay time.Duration, s sink.Sink) {
 	defer wg.Done()
 
 	// recover() catches panics inside this goroutine.
@@ -194,23 +214,18 @@ func worker(wg *sync.WaitGroup, id int, jobs <-chan []byte, processDelay time.Du
 			continue
 		}
 
-		switch payload := event.Payload.(type) {
+		// Update Prometheus metrics based on event type.
+		switch event.Payload.(type) {
 		case *pb.Event_Trade:
 			metrics.EventsProcessed.WithLabelValues("trade").Inc()
-			slog.Info("routed trade",
-				"worker", id,
-				"symbol", payload.Trade.Symbol,
-				"price", payload.Trade.Price,
-				"volume", payload.Trade.Volume,
-			)
 		case *pb.Event_Log:
 			metrics.EventsProcessed.WithLabelValues("log").Inc()
-			slog.Info("routed log",
-				"worker", id,
-				"level", payload.Log.Level,
-				"message", payload.Log.Message,
-				"service", payload.Log.ServiceName,
-			)
+		}
+
+		// Route the event to the configured sink (stdout, PostgreSQL, etc.).
+		if err := s.Write(&event); err != nil {
+			slog.Error("sink write failed", "worker", id, "error", err)
+			metrics.EventErrors.Inc()
 		}
 
 		// Simulate real-world processing time (e.g. DB write, HTTP call).
