@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -169,6 +170,9 @@ func (c *Client) query(promQL string) (*promResponse, error) {
 }
 
 // parseValue extracts the float64 from a Prometheus [timestamp, "value"] pair.
+// Prometheus can return "NaN" or "+Inf" for some queries (e.g. histogram_quantile
+// with no data). Go's json.Encoder can't serialize NaN/Inf — it produces an
+// empty response. We convert these to 0 so the JSON is always valid.
 func parseValue(v [2]interface{}) float64 {
 	s, ok := v[1].(string)
 	if !ok {
@@ -176,6 +180,9 @@ func parseValue(v [2]interface{}) float64 {
 	}
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
+		return 0
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return 0
 	}
 	return f

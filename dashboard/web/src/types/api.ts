@@ -33,3 +33,12 @@ export interface PipelineInfo {
 export interface MetricsSnapshot extends Metrics {
   timestamp: number;
 }
+
+export interface Trade {
+  eventId: string;
+  symbol: string;
+  price: number;
+  volume: number;
+  eventTs: number;
+  createdAt: string;
+}

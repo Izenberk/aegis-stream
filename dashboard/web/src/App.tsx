@@ -1,15 +1,18 @@
 import { useMetrics } from './hooks/useMetrics';
 import { usePipeline } from './hooks/usePipeline';
+import { useTrades } from './hooks/useTrades';
 import { Header } from './components/Header';
 import { MetricsCard } from './components/MetricsCard';
 import { EventsChart } from './components/EventsChart';
 import { QueueChart } from './components/QueueChart';
 import { LatencyChart } from './components/LatencyChart';
 import { CostPanel } from './components/CostPanel';
+import { TradesTable } from './components/TradesTable';
 
 function App() {
   const { current, history, error: metricsError } = useMetrics();
   const { pipeline, error: pipelineError } = usePipeline();
+  const { trades } = useTrades();
 
   const totalEventsPerSec = current
     ? Object.values(current.eventsPerSec).reduce((a, b) => a + b, 0)
@@ -59,6 +62,9 @@ function App() {
           <QueueChart history={history} />
           <LatencyChart history={history} />
         </div>
+
+        {/* Recent trades from PostgreSQL */}
+        <TradesTable trades={trades} />
 
         {/* Cost panel */}
         <CostPanel pipeline={pipeline} />
