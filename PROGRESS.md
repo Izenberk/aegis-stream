@@ -1,7 +1,7 @@
 # Aegis Stream: Implementation Progress Log
 
 **Last Updated:** March 9, 2026
-**Current State:** Phase 5 (Sink Interface + PostgreSQL) Planned
+**Current State:** Phase 5 (Sink Interface + PostgreSQL) In Progress
 **Peak Throughput:** 239,231 events/sec
 
 ---
@@ -114,13 +114,14 @@ aegis-stream/
 
 ---
 
-## 7. Phase 5 — Sink Interface + PostgreSQL (Planned)
+## 7. Phase 5 — Sink Interface + PostgreSQL (In Progress)
 
-Route processed events to real storage. Currently workers log to stdout — this phase adds a pluggable Sink interface so data flows to PostgreSQL (or any future destination).
-
-- [ ] Sink interface (`internal/sink`): `Write(event) error`, `Close() error`
-- [ ] StdoutSink (extract current behavior)
-- [ ] PostgresSink with batch inserts via `pgx`
-- [ ] PostgreSQL deployed to k3s
-- [ ] Dashboard shows stored trades
-- [ ] Full loop validated: Binance → pipeline → PostgreSQL → dashboard
+- [x] Sink interface (`internal/sink`): `Write(event) error`, `Close() error`
+- [x] StdoutSink (extract current behavior into interface)
+- [x] PostgresSink with batch inserts (100 events or 500ms) via `pgx` connection pool
+- [x] Config: `AEGIS_SINK=stdout|postgres`, `AEGIS_POSTGRES_URL` env vars
+- [x] Dashboard `/api/trades` endpoint + React TradesTable component
+- [x] Full loop validated: Binance → pipeline → PostgreSQL → dashboard
+- [x] Fix: NaN handling in Prometheus client (caused empty JSON responses)
+- [ ] Deploy PostgreSQL to k3s
+- [ ] Update AegisPipeline CRD for sink configuration

@@ -98,17 +98,17 @@ Show Aegis Stream handling real production-like data, not just synthetic benchma
 Route processed events to real storage instead of stdout. Prove the full loop: ingest → process → store → query.
 
 ### 1. Sink Interface (`internal/sink`)
-- [ ] Define `Sink` interface: `Write(event *pb.Event) error` + `Close() error`
-- [ ] Implement `StdoutSink` (current behavior, extracted into interface)
-- [ ] Wire sink into worker loop, replacing direct `slog.Info` calls
-- [ ] Make sink selectable via config/env var (`AEGIS_SINK=stdout|postgres`)
+- [x] Define `Sink` interface: `Write(event *pb.Event) error` + `Close() error`
+- [x] Implement `StdoutSink` (current behavior, extracted into interface)
+- [x] Wire sink into worker loop, replacing direct `slog.Info` calls
+- [x] Make sink selectable via config/env var (`AEGIS_SINK=stdout|postgres`)
 
 ### 2. PostgreSQL Sink
-- [ ] Design schema: `trades` table (symbol, price, volume, timestamp) + `logs` table (level, message, service, timestamp)
-- [ ] Implement `PostgresSink` using `pgx` (Go Postgres driver)
-- [ ] Batch inserts for throughput (flush every N events or M milliseconds)
-- [ ] Connection pooling and retry logic
-- [ ] Add `AEGIS_POSTGRES_URL` env var for connection string
+- [x] Design schema: `trades` table (symbol, price, volume, timestamp) + `logs` table (level, message, service, timestamp)
+- [x] Implement `PostgresSink` using `pgx` (Go Postgres driver)
+- [x] Batch inserts for throughput (flush every 100 events or 500ms)
+- [x] Connection pooling and retry logic
+- [x] Add `AEGIS_POSTGRES_URL` env var for connection string
 
 ### 3. PostgreSQL in K8s
 - [ ] Deploy PostgreSQL to k3s (StatefulSet or Helm chart)
@@ -116,13 +116,13 @@ Route processed events to real storage instead of stdout. Prove the full loop: i
 - [ ] Update AegisPipeline CRD to support sink configuration
 
 ### 4. Dashboard Integration
-- [ ] Add `/api/trades` endpoint to dashboard API (query stored trades)
-- [ ] Add a trades table/view to the React dashboard
-- [ ] Show recent trades flowing through the pipeline in real time
+- [x] Add `/api/trades` endpoint to dashboard API (query stored trades)
+- [x] Add a trades table/view to the React dashboard
+- [x] Show recent trades flowing through the pipeline in real time
 
 ### 5. End-to-End Validation
-- [ ] Run feed → aegis-stream → PostgreSQL with live Binance data
-- [ ] Query stored trades from dashboard
+- [x] Run feed → aegis-stream → PostgreSQL with live Binance data
+- [x] Query stored trades from dashboard
 - [ ] Verify data integrity (events in = rows stored)
 
 ---
