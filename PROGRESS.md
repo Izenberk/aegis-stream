@@ -123,5 +123,6 @@ aegis-stream/
 - [x] Dashboard `/api/trades` endpoint + React TradesTable component
 - [x] Full loop validated: Binance → pipeline → PostgreSQL → dashboard
 - [x] Fix: NaN handling in Prometheus client (caused empty JSON responses)
-- [ ] Deploy PostgreSQL to k3s
-- [ ] Update AegisPipeline CRD for sink configuration
+- [x] Deploy PostgreSQL to k3s (StatefulSet + headless Service + Secret)
+- [x] Update AegisPipeline CRD with `sinkType` and `postgresURL` fields
+- [x] Full loop validated in k3s: Binance → feed → aegis-stream → PostgreSQL (1000+ trades)

@@ -56,6 +56,18 @@ type AegisPipelineSpec struct {
 	// Used by the React dashboard to calculate live cost-per-second.
 	// +kubebuilder:default="0.05"
 	CostPerPodHour string `json:"costPerPodHour"`
+
+	// sinkType selects where processed events are routed: "stdout" or "postgres".
+	// +kubebuilder:validation:Enum=stdout;postgres
+	// +kubebuilder:default="stdout"
+	// +optional
+	SinkType string `json:"sinkType,omitempty"`
+
+	// postgresURL is the connection string for the PostgreSQL sink.
+	// Required when sinkType is "postgres".
+	// Example: "postgres://aegis:aegis@aegis-postgres:5432/aegis"
+	// +optional
+	PostgresURL string `json:"postgresURL,omitempty"`
 }
 
 // AegisPipelineStatus defines the observed state of AegisPipeline.

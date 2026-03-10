@@ -78,6 +78,12 @@ spec:
                 description: port is the TCP listen port for event traffic.
                 format: int32
                 type: integer
+              postgresURL:
+                description: |-
+                  postgresURL is the connection string for the PostgreSQL sink.
+                  Required when sinkType is "postgres".
+                  Example: "postgres://aegis:aegis@aegis-postgres:5432/aegis"
+                type: string
               queueDepth:
                 default: 100000
                 description: queueDepth is the buffered channel capacity per pod.
@@ -91,6 +97,14 @@ spec:
                 maximum: 20
                 minimum: 1
                 type: integer
+              sinkType:
+                default: stdout
+                description: 'sinkType selects where processed events are routed:
+                  "stdout" or "postgres".'
+                enum:
+                - stdout
+                - postgres
+                type: string
               workers:
                 default: 50
                 description: workers is the number of worker goroutines per pod.

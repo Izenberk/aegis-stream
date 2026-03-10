@@ -12,3 +12,5 @@ spec:
   port: 9000
   metricsPort: 2112
   costPerPodHour: "0.05"
+  sinkType: "postgres"
+  postgresURL: "postgres://aegis:aegis@aegis-postgres:5432/aegis"

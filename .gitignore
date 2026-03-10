@@ -22,3 +22,8 @@ vendor/
 # Environment files (may contain secrets)
 .env
 .env.*
+
+# Stray binaries built outside bin/
+/server
+/stress
+/dashboard/api/api

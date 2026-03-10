@@ -1,7 +1,7 @@
 # --- Stage 1: Build ---
 # Uses the full Go toolchain image to compile.
 # This image is ~800MB — we only use it for building, never ship it.
-FROM golang:1.23-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # Install ca-certificates so the final binary can make HTTPS calls if needed.
 # Alpine uses apk instead of apt.

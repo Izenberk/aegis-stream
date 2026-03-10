@@ -1248,3 +1248,337 @@ The operator bridges the gap between the CRD and our aegis-stream server binary.
 | `spec.image` | (Container image) | Which container to run |
 
 This means the same server binary we built in Phase 1 runs unchanged. The operator just configures it differently per CR.
+
+---
+
+## Phase 4: Real Data Demo
+
+### Live Market Data Feeder (`cmd/feed`)
+
+**The problem:** Up to Phase 3, all testing used synthetic benchmarks — identical payloads, single connection. This proves throughput but doesn't demonstrate real-world value.
+
+**The solution:** Connect to a real crypto exchange and route live trades through the pipeline.
+
+**Binance WebSocket API:**
+- Public aggregate trade streams — no API key needed
+- Combined stream URL: `wss://stream.binance.com:9443/stream?streams=btcusdt@aggTrade/ethusdt@aggTrade/solusdt@aggTrade`
+- Delivers JSON messages like: `{"s":"BTCUSDT","p":"42500.50","q":"2.5","E":1672515782136}`
+
+**Data flow:**
+```
+Binance WSS → JSON → parse → pb.Trade → proto.Marshal → frame.Write → TCP :9000
+```
+
+**Key patterns:**
+- **Reconnect with exponential backoff:** On disconnect, wait 1s → 2s → 4s → max 30s before retrying. Reset delay on successful connection. This prevents hammering a down server.
+- **Mixed payloads:** Every N trades, also send a synthetic `pb.Log` event. Demonstrates the `oneof` pattern from Phase 1 with real data.
+- **Graceful shutdown:** Same `os/signal` + `context.WithCancel` pattern as the server. Cancel context → close WebSocket → close TCP → print final stats.
+
+---
+
+### Stress Test Tool (`cmd/stress`)
+
+**The problem:** The bench tool sends from one connection with identical payloads. Real production has many clients sending varied data with traffic spikes.
+
+**The solution:** Multi-connection stress test with two phases:
+```
+Time 0s                         30s                    40s
+├─────── Sustained ──────────────┤──── Spike ───────────┤
+  10 conns × 500/s = 5,000/s      10 conns × 2,500/s = 25,000/s
+```
+
+**Payload strategy:**
+- Pre-generate ~100 varied payloads before the timed test (no allocation during send)
+- 70% Trade (random symbols, realistic prices), 30% Log (random levels, varied messages)
+- Each payload pre-marshaled and pre-framed into `[]byte` — zero allocation in the hot loop
+
+**Rate limiting per connection:**
+```go
+perConnRate := rate / numConns  // distribute evenly
+ticker := time.NewTicker(time.Second / time.Duration(perConnRate))
+```
+Each connection gets its own ticker for pacing. Round-robin through the payload pool.
+
+**Server-side verification:** Same pattern as bench — scrape `/metrics` before and after, compare `aegis_events_processed_total` to calculate actual server-side throughput and loss percentage.
+
+---
+
+### AEGIS_PROCESS_DELAY — Simulating Real Workloads
+
+**The problem:** With 50 workers and sub-microsecond processing, the server processes events faster than any stress test can send them. The queue never fills, so HPA never sees high `aegis_queue_depth` and never scales up.
+
+**The solution:** A configurable delay added to each worker:
+```go
+if cfg.ProcessDelay > 0 {
+    time.Sleep(cfg.ProcessDelay)
+}
+```
+
+With `AEGIS_PROCESS_DELAY=10ms` and 5 workers, max throughput per pod ≈ 500 events/sec. This makes the queue fill up under load, triggering HPA scaling.
+
+**Why this matters:** In a real system, workers would do I/O (database writes, API calls, network hops) that takes milliseconds. The delay simulates this. Without it, the demo only proves "Go is fast at in-memory work" — not that the autoscaling architecture works.
+
+---
+
+## Phase 5: Sink Interface + PostgreSQL
+
+### The Sink Interface Pattern
+
+**The problem:** In Phases 1-4, workers logged events to stdout via `slog.Info`. This proves the pipeline works but doesn't *store* data. To be useful, events need to go somewhere — a database, a message queue, a file.
+
+**The solution:** Define an interface that abstracts the destination:
+```go
+type Sink interface {
+    Write(event *pb.Event) error
+    Close() error
+}
+```
+
+Any destination just implements these two methods. The worker doesn't know or care where events end up:
+```go
+func worker(s sink.Sink, jobs <-chan Job) {
+    for job := range jobs {
+        event := unmarshal(job.Data)
+        s.Write(event)  // could be stdout, PostgreSQL, Kafka, etc.
+    }
+}
+```
+
+**Why interfaces matter in Go:** Go interfaces are implicit — you don't declare "implements Sink." If a struct has `Write(*pb.Event) error` and `Close() error`, it *is* a Sink. This means you can add new sink types (Kafka, S3, etc.) without changing existing code.
+
+**Current implementations:**
+- `StdoutSink` — extracts the original `slog.Info` logging (default)
+- `PostgresSink` — batch inserts into PostgreSQL
+
+---
+
+### PostgreSQL Sink — Batch Inserts
+
+**The problem:** Inserting one row per event at 5,000 events/sec means 5,000 SQL queries per second. Each query has network round-trip overhead (even on localhost: ~0.5ms). At scale, the database becomes the bottleneck.
+
+**The solution:** Buffer events and insert many rows in one SQL statement:
+
+```go
+type PostgresSink struct {
+    pool       *pgxpool.Pool
+    mu         sync.Mutex
+    trades     []tradeRow    // buffer
+    logs       []logRow      // buffer
+}
+```
+
+**Flush triggers:**
+1. **Buffer full** (100 events) — high throughput: events flush immediately when the buffer fills
+2. **Timer** (500ms) — low throughput: a background goroutine flushes periodically so events don't sit in the buffer forever
+
+**Why both triggers?** With only a buffer-size trigger, during low traffic (e.g., 1 event/sec), events would wait in the buffer for 100 seconds before being written. The timer ensures they're visible within 500ms.
+
+**Transaction-based flush:**
+```go
+tx, _ := pool.Begin(ctx)
+for _, t := range trades {
+    tx.Exec(ctx, "INSERT INTO trades ...", t.symbol, t.price, ...)
+}
+tx.Commit(ctx)
+```
+
+All rows in a batch succeed or fail together. No partial writes.
+
+**Connection pooling (`pgxpool`):**
+The sink uses `pgxpool.Pool`, not a single `pgx.Conn`. A pool maintains multiple connections and hands them out to concurrent callers. This matters because:
+- Multiple goroutines may flush simultaneously
+- Database connections are expensive to create (TCP handshake + auth + TLS)
+- The pool reuses connections, amortizing that cost
+
+**Close() flushes remaining events:**
+```go
+func (p *PostgresSink) Close() error {
+    p.mu.Lock()
+    defer p.mu.Unlock()
+    // Flush any buffered events before closing
+    p.flush()
+    p.pool.Close()
+}
+```
+On graceful shutdown, the server closes the sink *after* all workers finish. This ensures no events are lost in the buffer.
+
+---
+
+### PostgreSQL Schema
+
+```sql
+CREATE TABLE trades (
+    id        SERIAL PRIMARY KEY,
+    event_id  TEXT NOT NULL,
+    symbol    TEXT NOT NULL,
+    price     DOUBLE PRECISION NOT NULL,
+    volume    INTEGER NOT NULL,
+    event_ts  BIGINT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE logs (
+    id        SERIAL PRIMARY KEY,
+    event_id  TEXT NOT NULL,
+    level     TEXT NOT NULL,
+    message   TEXT NOT NULL,
+    service   TEXT NOT NULL,
+    event_ts  BIGINT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**Key design decisions:**
+- `event_id` — the protobuf event ID, for deduplication and tracing
+- `event_ts` — the original event timestamp (nanoseconds), separate from `created_at` (when the row was inserted). The gap between these shows pipeline latency.
+- `SERIAL PRIMARY KEY` — auto-incrementing integer. Simple and fast for append-heavy workloads.
+- `TIMESTAMPTZ` — timestamp with timezone. Always store timestamps with timezone info to avoid ambiguity.
+
+---
+
+### PostgreSQL in Kubernetes
+
+**StatefulSet vs Deployment:**
+
+| | Deployment | StatefulSet |
+|---|---|---|
+| **Pod identity** | Random names (`aegis-stream-7b4d9`)  | Stable names (`aegis-postgres-0`) |
+| **Storage** | No persistent volumes by default | PersistentVolumeClaim per pod |
+| **Ordering** | All pods start/stop simultaneously | Start in order: 0, 1, 2... |
+| **Use case** | Stateless apps (our aegis-stream) | Databases, queues (need stable storage) |
+
+PostgreSQL needs StatefulSet because:
+1. Data must survive pod restarts (PVC keeps data on disk)
+2. Each replica needs its own volume (not shared)
+3. Stable network identity for replication (if we add replicas later)
+
+**The manifests:**
+
+**Secret** (`k8s/postgres/secret.yaml`):
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aegis-postgres
+stringData:
+  POSTGRES_USER: aegis
+  POSTGRES_PASSWORD: aegis
+  POSTGRES_DB: aegis
+```
+The `postgres:17` Docker image reads these env vars on first boot to create the user and database. `stringData` accepts plain text — K8s base64-encodes it automatically.
+
+**StatefulSet** (`k8s/postgres/statefulset.yaml`):
+Uses `envFrom: secretRef` to inject all Secret keys as env vars. The `volumeClaimTemplates` section tells K8s to create a 1Gi PersistentVolumeClaim for each pod. Even if the pod is deleted, the PVC (and your data) remains.
+
+**Headless Service** (`k8s/postgres/service.yaml`):
+```yaml
+clusterIP: None  # headless
+```
+A headless Service creates DNS records directly to pod IPs instead of load-balancing. For a single-replica database, the DNS name `aegis-postgres` resolves directly to the pod. This is standard for StatefulSets.
+
+---
+
+### Pod-to-Pod Communication in Kubernetes
+
+**How aegis-stream connects to PostgreSQL in k3s:**
+
+The connection string uses the **K8s Service DNS name**:
+```
+postgres://aegis:aegis@aegis-postgres:5432/aegis
+```
+
+This works because:
+1. The PostgreSQL Service is named `aegis-postgres`
+2. Both are in the `default` namespace
+3. K8s DNS automatically resolves `aegis-postgres` to the pod IP
+
+**Full DNS hierarchy:**
+```
+aegis-postgres                                    ← same namespace (shorthand)
+aegis-postgres.default                            ← explicit namespace
+aegis-postgres.default.svc                        ← explicit service
+aegis-postgres.default.svc.cluster.local          ← fully qualified
+```
+
+All four resolve to the same IP. Within the same namespace, the short name works.
+
+**Comparison with Docker Compose:**
+| | Docker Compose | Kubernetes |
+|---|---|---|
+| **Define services** | `docker-compose.yml` | Multiple YAML files (`deployment.yaml`, `service.yaml`) |
+| **Networking** | Automatic, by service name | Service DNS, must create Service objects |
+| **Start all** | `docker-compose up` | `kubectl apply -f k8s/` |
+| **Scaling** | `docker-compose up --scale app=3` | HPA or `kubectl scale` |
+| **Persistence** | `volumes:` in compose file | PersistentVolumeClaim in StatefulSet |
+| **Port access** | `ports: "5432:5432"` | `kubectl port-forward` (dev) or LoadBalancer (prod) |
+
+K8s is more complex but gives you auto-scaling, self-healing, rolling updates, and multi-node deployment that Compose doesn't handle.
+
+---
+
+### `kubectl port-forward` — Tunneling Into the Cluster
+
+**What it does:** Creates a TCP tunnel from your local machine to a pod or service inside the cluster.
+
+```bash
+kubectl port-forward svc/aegis-stream 9000:9000 2112:2112
+```
+
+**Visual:**
+```
+Your laptop                          k3s cluster
+┌─────────────┐                     ┌───────────────────┐
+│ localhost    │     tunnel          │ aegis-stream svc  │
+│   :9000 ────┼─────────────────────┼──► :9000 (TCP)    │
+│   :2112 ────┼─────────────────────┼──► :2112 (metrics)│
+└─────────────┘                     └───────────────────┘
+```
+
+**Key behaviors:**
+- Only works while the `kubectl port-forward` process is running — kill it and the tunnel closes
+- If the target pod restarts (e.g., rolling update), the tunnel breaks and you must restart it
+- Multiple ports can be forwarded in one command: `9000:9000 2112:2112`
+- The left side is your local port, the right side is the service/pod port
+
+**Why not for production?** Port-forward is a debugging tool:
+- Single connection, no load balancing
+- Breaks on pod restarts
+- Requires `kubectl` access (not suitable for end users)
+
+In production, you'd use a `LoadBalancer` Service (cloud provider gives you a public IP) or an `Ingress` controller (routes HTTP traffic by hostname/path).
+
+---
+
+### Prometheus `rate()` Window Sizing
+
+**The problem:** Our dashboard showed flat lines despite active traffic. The rate queries used `[1m]` windows, but Prometheus scrapes every 60 seconds.
+
+**Why it matters:** `rate()` needs at least 2 data points within the window to calculate a per-second rate. With a 60s scrape interval and a `[1m]` window, you get at most 1-2 points — often not enough.
+
+**The fix:** Use `[5m]` windows:
+```
+rate(aegis_events_processed_total[5m])    ← 5 data points in window
+```
+
+**Rule of thumb:** Set the rate window to at least 4× the scrape interval. With 60s scrapes, use `[4m]` or `[5m]`. This gives enough data points for a smooth rate calculation.
+
+---
+
+### NaN Handling in Go's JSON Encoder
+
+**The problem:** The dashboard API returned empty responses (Content-Length: 0) even though metrics were fetched successfully.
+
+**Root cause:** Prometheus returns `NaN` for `histogram_quantile()` when there's no data (no events = no histogram buckets). Go's `json.Encoder` cannot serialize `NaN` or `Inf` float values — the JSON spec doesn't support them. Instead of returning an error, the encoder silently produces incomplete output.
+
+**The fix:**
+```go
+func parseValue(v [2]interface{}) float64 {
+    f, err := strconv.ParseFloat(s, 64)
+    if math.IsNaN(f) || math.IsInf(f, 0) {
+        return 0  // safe for JSON
+    }
+    return f
+}
+```
+
+**Lesson:** Always sanitize float values before JSON encoding in Go. NaN and Inf are valid IEEE 754 floats but invalid JSON. This is a common gotcha.

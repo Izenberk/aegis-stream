@@ -111,9 +111,9 @@ Route processed events to real storage instead of stdout. Prove the full loop: i
 - [x] Add `AEGIS_POSTGRES_URL` env var for connection string
 
 ### 3. PostgreSQL in K8s
-- [ ] Deploy PostgreSQL to k3s (StatefulSet or Helm chart)
-- [ ] Update aegis-stream Deployment with `AEGIS_SINK=postgres` and DB connection
-- [ ] Update AegisPipeline CRD to support sink configuration
+- [x] Deploy PostgreSQL to k3s (StatefulSet + headless Service + Secret)
+- [x] Update aegis-stream Deployment with `AEGIS_SINK=postgres` and DB connection
+- [x] Update AegisPipeline CRD to support sink configuration (`sinkType`, `postgresURL`)
 
 ### 4. Dashboard Integration
 - [x] Add `/api/trades` endpoint to dashboard API (query stored trades)

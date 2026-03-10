@@ -202,12 +202,7 @@ func (r *AegisPipelineReconciler) buildDeployment(p *streamv1alpha1.AegisPipelin
 							{Name: "http-metrics", ContainerPort: p.Spec.MetricsPort},
 						},
 						// Map CRD fields to the env vars our server reads (internal/config).
-						Env: []corev1.EnvVar{
-							{Name: "AEGIS_PORT", Value: fmt.Sprintf(":%d", p.Spec.Port)},
-							{Name: "AEGIS_WORKERS", Value: fmt.Sprintf("%d", p.Spec.Workers)},
-							{Name: "AEGIS_QUEUE_DEPTH", Value: fmt.Sprintf("%d", p.Spec.QueueDepth)},
-							{Name: "AEGIS_METRICS_PORT", Value: fmt.Sprintf(":%d", p.Spec.MetricsPort)},
-						},
+						Env: r.buildEnvVars(p),
 						// Same probes we had in the manual YAML.
 						LivenessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
@@ -234,6 +229,26 @@ func (r *AegisPipelineReconciler) buildDeployment(p *streamv1alpha1.AegisPipelin
 			},
 		},
 	}
+}
+
+// buildEnvVars constructs the env var list from the CR spec.
+// Maps CRD fields to the env vars our server reads (internal/config).
+func (r *AegisPipelineReconciler) buildEnvVars(p *streamv1alpha1.AegisPipeline) []corev1.EnvVar {
+	envs := []corev1.EnvVar{
+		{Name: "AEGIS_PORT", Value: fmt.Sprintf(":%d", p.Spec.Port)},
+		{Name: "AEGIS_WORKERS", Value: fmt.Sprintf("%d", p.Spec.Workers)},
+		{Name: "AEGIS_QUEUE_DEPTH", Value: fmt.Sprintf("%d", p.Spec.QueueDepth)},
+		{Name: "AEGIS_METRICS_PORT", Value: fmt.Sprintf(":%d", p.Spec.MetricsPort)},
+	}
+
+	if p.Spec.SinkType != "" {
+		envs = append(envs, corev1.EnvVar{Name: "AEGIS_SINK", Value: p.Spec.SinkType})
+	}
+	if p.Spec.PostgresURL != "" {
+		envs = append(envs, corev1.EnvVar{Name: "AEGIS_POSTGRES_URL", Value: p.Spec.PostgresURL})
+	}
+
+	return envs
 }
 
 // buildService constructs the desired Service from the CR spec.
