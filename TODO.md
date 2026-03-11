@@ -127,10 +127,41 @@ Route processed events to real storage instead of stdout. Prove the full loop: i
 
 ---
 
-## Phase 6 — Service-to-Service (Future)
+## Phase 6 — Service-to-Service with NATS
 
-- [ ] Kafka/NATS sink for fan-out to multiple consumers
-- [ ] Consumer services (alerting, analytics, archival)
+Publish events to NATS so multiple independent services can consume the same stream. Proves the fan-out architecture pattern.
+
+### 1. NATS Sink (`internal/sink/nats.go`)
+- [ ] Implement `NATSSink` following the existing Sink interface (`Write` + `Close`)
+- [ ] Connect to NATS server with `nats.Connect()`, verify connection on startup
+- [ ] Publish Trade events to `aegis.trades` subject, Log events to `aegis.logs` subject
+- [ ] Serialize events as protobuf bytes (same format as TCP, consumers can unmarshal)
+- [ ] Graceful shutdown: drain connection on `Close()`
+
+### 2. Config + Server Wiring
+- [ ] Add `NATSURL` to config struct, `-nats-url` flag, `AEGIS_NATS_URL` env var
+- [ ] Add `case "nats":` in sink validation and server creation switch
+- [ ] Test locally: `./bin/server -sink nats -nats-url nats://localhost:4222`
+
+### 3. NATS in K8s (`k8s/nats/`)
+- [ ] Deploy NATS to k3s (StatefulSet with JetStream enabled)
+- [ ] Headless Service for `aegis-nats:4222` DNS
+- [ ] Connect aegis-stream pods to NATS via Service DNS
+
+### 4. Consumer Service (`cmd/consumer/`)
+- [ ] Build a Go service that subscribes to `aegis.trades` from NATS
+- [ ] Price alert: log a warning when trade price crosses a threshold
+- [ ] Deploy consumer to k3s, verify it receives events published by aegis-stream
+
+### 5. Update Operator CRD
+- [ ] Add `nats` to `sinkType` enum and `natsURL` field to CRD spec
+- [ ] Update controller to map `natsURL` → `AEGIS_NATS_URL` env var
+- [ ] Regenerate CRD manifests
+
+### 6. End-to-End Validation
+- [ ] Full loop in k3s: Binance → feed → aegis-stream → NATS → consumer
+- [ ] Verify consumer receives all published events
+- [ ] Update NOTES.md with NATS concepts
 
 ## Phase 7 — Cloud Deployment (Future)
 

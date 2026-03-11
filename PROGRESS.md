@@ -114,7 +114,7 @@ aegis-stream/
 
 ---
 
-## 7. Phase 5 — Sink Interface + PostgreSQL (In Progress)
+## 7. Phase 5 — Sink Interface + PostgreSQL (Complete)
 
 - [x] Sink interface (`internal/sink`): `Write(event) error`, `Close() error`
 - [x] StdoutSink (extract current behavior into interface)
@@ -126,3 +126,14 @@ aegis-stream/
 - [x] Deploy PostgreSQL to k3s (StatefulSet + headless Service + Secret)
 - [x] Update AegisPipeline CRD with `sinkType` and `postgresURL` fields
 - [x] Full loop validated in k3s: Binance → feed → aegis-stream → PostgreSQL (1000+ trades)
+
+---
+
+## 8. Phase 6 — Service-to-Service with NATS (In Progress)
+
+- [ ] NATS sink (`internal/sink/nats.go`): publish events to subjects (`aegis.trades`, `aegis.logs`)
+- [ ] Config: `AEGIS_SINK=nats`, `AEGIS_NATS_URL` env var
+- [ ] Deploy NATS to k3s (StatefulSet + JetStream)
+- [ ] Consumer service (`cmd/consumer`): subscribe to NATS, process events
+- [ ] Update AegisPipeline CRD with `nats` sink type and `natsURL` field
+- [ ] Full loop in k3s: Binance → feed → aegis-stream → NATS → consumer

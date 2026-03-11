@@ -1582,3 +1582,223 @@ func parseValue(v [2]interface{}) float64 {
 ```
 
 **Lesson:** Always sanitize float values before JSON encoding in Go. NaN and Inf are valid IEEE 754 floats but invalid JSON. This is a common gotcha.
+
+---
+
+## Phase 6: Service-to-Service with NATS
+
+### What Is a Message Broker?
+
+**The problem:** In Phases 1-5, aegis-stream sends events to exactly one destination (stdout or PostgreSQL). If you want a second consumer (e.g., a price alert service), you'd have to modify aegis-stream to write to both. Add a third consumer? Modify again. This doesn't scale.
+
+**The solution:** Put a message broker in between. The producer (aegis-stream) publishes events once. Any number of consumers subscribe independently. Adding a new consumer requires zero changes to the producer.
+
+**Without a broker (point-to-point):**
+```
+aegis-stream ──► PostgreSQL
+              ──► Alert Service      ← must modify aegis-stream for each new consumer
+              ──► Analytics Service
+```
+
+**With a broker (pub/sub):**
+```
+aegis-stream ──► NATS ──► PostgreSQL consumer
+                      ──► Alert consumer        ← just subscribes, no changes to aegis-stream
+                      ──► Analytics consumer
+```
+
+This is called the **publish/subscribe** (pub/sub) pattern. It decouples producers from consumers — they don't know about each other, they only know about the broker.
+
+---
+
+### Why NATS?
+
+NATS is an open-source message broker written in Go. Created by Derek Collison (who also built messaging systems at TIBCO and Apcera).
+
+**Why we chose NATS over Kafka:**
+
+| | NATS | Kafka |
+|---|---|---|
+| **Written in** | Go | Java/Scala |
+| **Binary size** | ~20MB | ~500MB + JVM |
+| **Startup time** | Milliseconds | Seconds (JVM warmup) |
+| **K8s deploy** | Simple StatefulSet | Needs Strimzi operator (complex) |
+| **Config** | Minimal (works out of the box) | Dozens of tuning parameters |
+| **Go client** | First-class (same language) | Good but JVM-native |
+| **Philosophy** | Simple, fast, "always on" | Durable log, replay, exactly-once |
+
+NATS follows the same philosophy as our project: lightweight, fast, Go-native. It's a single binary — similar to k3s being a lightweight Kubernetes.
+
+---
+
+### Core NATS Concepts
+
+#### Subjects — Message Addresses
+
+A subject is a string name that messages are published to and subscribed from. Think of it like a TV channel — publishers broadcast to a channel, subscribers tune in.
+
+```
+aegis.trades    ← all trade events go here
+aegis.logs      ← all log events go here
+```
+
+**Hierarchical naming:** NATS uses dots as separators (like a file path). This enables wildcard subscriptions:
+- `aegis.*` — subscribe to both `aegis.trades` and `aegis.logs`
+- `aegis.>` — subscribe to anything starting with `aegis.` (including nested subjects)
+
+#### Publish — Fire and Forget
+
+The publisher sends a message to a subject. It doesn't know (or care) who's listening:
+
+```go
+nc.Publish("aegis.trades", data)  // send and move on
+```
+
+If nobody is subscribed, the message is silently dropped (in core NATS). This is fine for real-time data — if no one's listening, there's nothing to save.
+
+#### Subscribe — Receive Messages
+
+A subscriber registers interest in a subject. Every message published to that subject is delivered to every subscriber:
+
+```go
+nc.Subscribe("aegis.trades", func(msg *nats.Msg) {
+    // process the trade event
+    event := unmarshal(msg.Data)
+})
+```
+
+**Key behavior:** If 3 services subscribe to `aegis.trades`, all 3 receive every message. This is fan-out — one publish, multiple deliveries.
+
+#### Queue Groups — Load Balancing
+
+What if you have 5 instances of the same consumer? You don't want each instance processing the same message — you want load balancing.
+
+**Queue groups** solve this:
+```go
+nc.QueueSubscribe("aegis.trades", "alert-workers", handler)
+```
+
+All subscribers in the same queue group (`"alert-workers"`) share messages — each message goes to exactly one member. Different queue groups still get all messages independently.
+
+```
+Publisher ──► NATS subject "aegis.trades"
+                    │
+                    ├──► Queue group "alert-workers" (5 instances share messages)
+                    │       Instance 1 gets message A
+                    │       Instance 2 gets message B
+                    │       Instance 3 gets message C ...
+                    │
+                    └──► Queue group "analytics" (3 instances share messages)
+                            Instance 1 gets message A
+                            Instance 2 gets message B ...
+```
+
+This is how you scale consumers horizontally in Kubernetes — run multiple pods in the same queue group.
+
+---
+
+### JetStream — Persistent Messaging
+
+Core NATS is "fire and forget" — if no one is subscribed when a message arrives, it's gone. JetStream adds persistence.
+
+**What JetStream adds:**
+
+| Feature | Core NATS | JetStream |
+|---|---|---|
+| **Message storage** | None (in-memory only) | Disk or memory, configurable |
+| **Replay** | No — miss it, lose it | Yes — consumers can start from any point |
+| **Delivery guarantee** | At-most-once | At-least-once (with ack) |
+| **Consumer tracking** | None | Server tracks what each consumer has processed |
+
+**When you need JetStream:**
+- Consumer crashes and restarts — it can resume from where it left off
+- You need an audit trail of all messages
+- Consumers process at different speeds — slow ones don't lose messages
+
+**When core NATS is enough:**
+- Real-time monitoring dashboards (showing live data, old data doesn't matter)
+- Notifications (if you missed it, a new one is coming soon anyway)
+
+**Streams and Consumers:**
+```
+Stream "AEGIS" (stores messages from aegis.trades and aegis.logs)
+    │
+    ├──► Consumer "alert-service" (tracks: processed up to message #1500)
+    │
+    └──► Consumer "analytics" (tracks: processed up to message #1200, slower)
+```
+
+A **Stream** defines what subjects to capture and how long to keep messages. A **Consumer** is a stateful subscription that remembers its position. If it disconnects and reconnects, it resumes from where it left off.
+
+---
+
+### NATS in Kubernetes
+
+**Deployment:** NATS runs as a StatefulSet (like PostgreSQL) because JetStream stores data on disk.
+
+```
+k8s/nats/
+├── statefulset.yaml    # NATS server with JetStream enabled
+└── service.yaml        # Headless service for aegis-nats:4222
+```
+
+**Ports:**
+
+| Port | Purpose |
+|---|---|
+| 4222 | Client connections (what aegis-stream connects to) |
+| 8222 | HTTP monitoring (health checks, stats) |
+| 6222 | Cluster routing (for multi-node NATS, not needed for dev) |
+
+**Connection from aegis-stream:**
+```
+nats://aegis-nats:4222
+```
+Same K8s DNS pattern as PostgreSQL — the Service name resolves to the pod IP.
+
+---
+
+### The Consumer Service Pattern
+
+A consumer is a standalone Go service that subscribes to NATS and does something with the events. This is the first time we build a **separate microservice** that communicates with aegis-stream indirectly (through NATS, not TCP).
+
+```go
+// cmd/consumer/main.go — simplified
+func main() {
+    nc, _ := nats.Connect("nats://aegis-nats:4222")
+
+    nc.Subscribe("aegis.trades", func(msg *nats.Msg) {
+        var event pb.Event
+        proto.Unmarshal(msg.Data, &event)
+        trade := event.GetTrade()
+        if trade.Price > threshold {
+            slog.Warn("price alert", "symbol", trade.Symbol, "price", trade.Price)
+        }
+    })
+
+    // Block until shutdown signal
+    <-ctx.Done()
+}
+```
+
+**What this teaches:**
+- Building independent microservices that communicate via messages (not direct calls)
+- Deploying multiple services in K8s that work together
+- The difference between synchronous (HTTP/TCP) and asynchronous (message queue) communication
+
+---
+
+### How NATS Fits Our Architecture
+
+```
+Phase 1-4:  Binance → feed → aegis-stream → stdout (log and forget)
+Phase 5:    Binance → feed → aegis-stream → PostgreSQL (store)
+Phase 6:    Binance → feed → aegis-stream → NATS → multiple consumers
+```
+
+Each phase adds a more sophisticated event destination:
+1. **stdout** — proves the pipeline works
+2. **PostgreSQL** — proves we can store and query events
+3. **NATS** — proves we can fan out to independent services
+
+This progression (point-to-point → storage → pub/sub) mirrors how real systems evolve.
