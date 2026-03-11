@@ -123,7 +123,7 @@ Route processed events to real storage instead of stdout. Prove the full loop: i
 ### 5. End-to-End Validation
 - [x] Run feed → aegis-stream → PostgreSQL with live Binance data
 - [x] Query stored trades from dashboard
-- [ ] Verify data integrity (events in = rows stored)
+- [x] Verify data integrity (events in = rows stored: 1063 trades, 10 logs — 100% match)
 
 ---
 
