@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: aegis-nats
+spec:
+  serviceName: aegis-nats
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aegis-nats
+  template:
+    metadata:
+      labels:
+        app: aegis-nats
+    spec:
+      containers:
+        - name: nats
+          image: nats:2.10-alpine
+          args: ["--jetstream", "--store_dir", "/data/jetstream"]
+          ports:
+            - containerPort: 4222
+              name: client
+            - containerPort: 8222
+              name: monitor
+          volumeMounts:
+            - name: data
+              mountPath: /data/jetstream
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

@@ -247,6 +247,9 @@ func (r *AegisPipelineReconciler) buildEnvVars(p *streamv1alpha1.AegisPipeline) 
 	if p.Spec.PostgresURL != "" {
 		envs = append(envs, corev1.EnvVar{Name: "AEGIS_POSTGRES_URL", Value: p.Spec.PostgresURL})
 	}
+	if p.Spec.NATSURL != "" {
+		envs = append(envs, corev1.EnvVar{Name: "AEGIS_NATS_URL", Value: p.Spec.NATSURL})
+	}
 
 	return envs
 }

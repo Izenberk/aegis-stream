@@ -132,30 +132,30 @@ Route processed events to real storage instead of stdout. Prove the full loop: i
 Publish events to NATS so multiple independent services can consume the same stream. Proves the fan-out architecture pattern.
 
 ### 1. NATS Sink (`internal/sink/nats.go`)
-- [ ] Implement `NATSSink` following the existing Sink interface (`Write` + `Close`)
-- [ ] Connect to NATS server with `nats.Connect()`, verify connection on startup
-- [ ] Publish Trade events to `aegis.trades` subject, Log events to `aegis.logs` subject
-- [ ] Serialize events as protobuf bytes (same format as TCP, consumers can unmarshal)
-- [ ] Graceful shutdown: drain connection on `Close()`
+- [x] Implement `NATSSink` following the existing Sink interface (`Write` + `Close`)
+- [x] Connect to NATS server with `nats.Connect()`, verify connection on startup
+- [x] Publish Trade events to `aegis.trades` subject, Log events to `aegis.logs` subject
+- [x] Serialize events as protobuf bytes (same format as TCP, consumers can unmarshal)
+- [x] Graceful shutdown: drain connection on `Close()`
 
 ### 2. Config + Server Wiring
-- [ ] Add `NATSURL` to config struct, `-nats-url` flag, `AEGIS_NATS_URL` env var
-- [ ] Add `case "nats":` in sink validation and server creation switch
-- [ ] Test locally: `./bin/server -sink nats -nats-url nats://localhost:4222`
+- [x] Add `NATSURL` to config struct, `-nats-url` flag, `AEGIS_NATS_URL` env var
+- [x] Add `case "nats":` in sink validation and server creation switch
+- [x] Test locally: `./bin/server -sink nats -nats-url nats://localhost:4222`
 
 ### 3. NATS in K8s (`k8s/nats/`)
 - [ ] Deploy NATS to k3s (StatefulSet with JetStream enabled)
-- [ ] Headless Service for `aegis-nats:4222` DNS
+- [x] Headless Service for `aegis-nats:4222` DNS
 - [ ] Connect aegis-stream pods to NATS via Service DNS
 
 ### 4. Consumer Service (`cmd/consumer/`)
-- [ ] Build a Go service that subscribes to `aegis.trades` from NATS
-- [ ] Price alert: log a warning when trade price crosses a threshold
+- [x] Build a Go service that subscribes to `aegis.trades` from NATS
+- [x] Price alert: log a warning when trade price crosses a threshold
 - [ ] Deploy consumer to k3s, verify it receives events published by aegis-stream
 
 ### 5. Update Operator CRD
-- [ ] Add `nats` to `sinkType` enum and `natsURL` field to CRD spec
-- [ ] Update controller to map `natsURL` → `AEGIS_NATS_URL` env var
+- [x] Add `nats` to `sinkType` enum and `natsURL` field to CRD spec
+- [x] Update controller to map `natsURL` → `AEGIS_NATS_URL` env var
 - [ ] Regenerate CRD manifests
 
 ### 6. End-to-End Validation

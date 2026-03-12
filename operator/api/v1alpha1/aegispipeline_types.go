@@ -57,8 +57,8 @@ type AegisPipelineSpec struct {
 	// +kubebuilder:default="0.05"
 	CostPerPodHour string `json:"costPerPodHour"`
 
-	// sinkType selects where processed events are routed: "stdout" or "postgres".
-	// +kubebuilder:validation:Enum=stdout;postgres
+	// sinkType selects where processed events are routed: "stdout", "postgres", or "nats".
+	// +kubebuilder:validation:Enum=stdout;postgres;nats
 	// +kubebuilder:default="stdout"
 	// +optional
 	SinkType string `json:"sinkType,omitempty"`
@@ -68,6 +68,12 @@ type AegisPipelineSpec struct {
 	// Example: "postgres://aegis:aegis@aegis-postgres:5432/aegis"
 	// +optional
 	PostgresURL string `json:"postgresURL,omitempty"`
+
+	// natsURL is the connection URL for the NATS sink.
+	// Required when sinkType is "nats".
+	// Example: "nats://aegis-nats:4222"
+	// +optional
+	NATSURL string `json:"natsURL,omitempty"`
 }
 
 // AegisPipelineStatus defines the observed state of AegisPipeline.

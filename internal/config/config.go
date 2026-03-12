@@ -23,8 +23,10 @@ type Config struct {
 	// Sink configuration: where processed events are routed.
 	// "stdout" = log to console (default, zero dependencies)
 	// "postgres" = write to PostgreSQL (requires AEGIS_POSTGRES_URL)
-	SinkType    string // "stdout" or "postgres"
+	// "nats" = publish to NATS subjects (requires AEGIS_NATS_URL)
+	SinkType    string // "stdout", "postgres", or "nats"
 	PostgresURL string // e.g. "postgres://aegis:aegis@localhost:5433/aegis"
+	NATSURL     string // e.g. "nats://localhost:4222"
 }
 
 // Load reads configuration with this priority (highest wins):
@@ -45,8 +47,9 @@ func Load() (*Config, error) {
 	flag.IntVar(&cfg.MaxConns, "max-conns", 1000, "Max simultaneous TCP connections")
 	flag.DurationVar(&cfg.ReadTimeout, "read-timeout", 30*time.Second, "TCP read deadline per frame")
 	flag.DurationVar(&cfg.ProcessDelay, "process-delay", 0, "Per-event processing delay to simulate I/O (e.g. 5ms)")
-	flag.StringVar(&cfg.SinkType, "sink", "stdout", "Event sink type: stdout or postgres")
+	flag.StringVar(&cfg.SinkType, "sink", "stdout", "Event sink type: stdout, postgres, or nats")
 	flag.StringVar(&cfg.PostgresURL, "postgres-url", "", "PostgreSQL connection string (required when sink=postgres)")
+	flag.StringVar(&cfg.NATSURL, "nats-url", "", "NATS server URL (required when sink=nats)")
 	flag.Parse()
 
 	// Step 2: If an env var is set, it overrides the flag value.
@@ -101,6 +104,9 @@ func Load() (*Config, error) {
 	if v, ok := os.LookupEnv("AEGIS_POSTGRES_URL"); ok {
 		cfg.PostgresURL = v
 	}
+	if v, ok := os.LookupEnv("AEGIS_NATS_URL"); ok {
+		cfg.NATSURL = v
+	}
 
 	// Step 3: Validate — catch bad config before the server starts,
 	// not minutes later when something silently breaks.
@@ -134,8 +140,12 @@ func (c *Config) validate() error {
 		if c.PostgresURL == "" {
 			return fmt.Errorf("sink=postgres requires AEGIS_POSTGRES_URL or -postgres-url")
 		}
+	case "nats":
+		if c.NATSURL == "" {
+			return fmt.Errorf("sink=nats requires AEGIS_NATS_URL or -nats-url")
+		}
 	default:
-		return fmt.Errorf("unknown sink type %q (supported: stdout, postgres)", c.SinkType)
+		return fmt.Errorf("unknown sink type %q (supported: stdout, postgres, nats)", c.SinkType)
 	}
 	return nil
 }

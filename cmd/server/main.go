@@ -73,6 +73,13 @@ func main() {
 			os.Exit(1)
 		}
 		eventSink = s
+	case "nats":
+		s, err := sink.NewNATS(cfg.NATSURL)
+		if err != nil {
+			slog.Error("failed to connect to nats", "error", err)
+			os.Exit(1)
+		}
+		eventSink = s
 	default:
 		eventSink = sink.NewStdout()
 	}

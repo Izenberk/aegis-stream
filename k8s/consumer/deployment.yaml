@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis-consumer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aegis-consumer
+  template:
+    metadata:
+      labels:
+        app: aegis-consumer
+    spec:
+      containers:
+        - name: consumer
+          image: docker.io/library/aegis-consumer:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: AEGIS_CONSUMER_NATS_URL
+              value: "nats://aegis-nats:4222"
+            - name: AEGIS_CONSUMER_SUBJECT
+              value: "aegis.trades"
+            - name: AEGIS_CONSUMER_THRESHOLD
+              value: "75000"

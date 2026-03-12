@@ -6,6 +6,7 @@ build:
 	go build -o bin/bench ./cmd/bench
 	go build -o bin/feed ./cmd/feed
 	go build -o bin/stress ./cmd/stress
+	go build -o bin/consumer ./cmd/consumer
 
 run: build
 	./bin/server
