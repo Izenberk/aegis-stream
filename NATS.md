@@ -222,3 +222,122 @@ We chose NATS. Here's when you'd choose differently:
 - Your organization already runs Kafka
 
 **The real answer:** Start with NATS. If you hit its limits, you'll know exactly why you need Kafka — and migrating is straightforward because the sink interface abstracts the destination.
+
+---
+
+## 9. JetStream Upgrade: Core NATS vs JetStream API
+
+### What changed in the sink
+
+```go
+// Before (Core NATS) — fire-and-forget
+conn.Publish(subject, data)
+
+// After (JetStream) — guaranteed delivery
+js.Publish(ctx, subject, data)  // returns PubAck from server
+```
+
+Core NATS `Publish()` copies data to a buffer and hopes the server gets it. JetStream `Publish()` waits for the server to **persist the message to the stream** and return an acknowledgement. If the server crashes before persisting, the publish returns an error — your code knows it failed.
+
+### What changed in the consumer
+
+```go
+// Before (Core NATS) — ephemeral subscription
+conn.Subscribe(subject, func(msg *nats.Msg) { ... })
+
+// After (JetStream) — durable consumer with explicit ack
+cons, _ := js.CreateOrUpdateConsumer(ctx, "AEGIS", jetstream.ConsumerConfig{
+    Durable:        "price-alerts",
+    FilterSubjects: []string{subject},
+    AckPolicy:      jetstream.AckExplicitPolicy,
+})
+cons.Consume(func(msg jetstream.Msg) {
+    // process...
+    msg.Ack()  // tell NATS we're done with this message
+})
+```
+
+Key differences:
+- **Durable** means NATS remembers the consumer's position. Restart the consumer → it picks up where it left off, no missed messages
+- **AckExplicit** means the consumer must call `msg.Ack()`. If it crashes mid-processing, NATS redelivers the message to another consumer (at-least-once delivery)
+- **`msg.Data()`** is a method call (not a field like `msg.Data` in Core NATS)
+
+### Stream setup (idempotent)
+
+```go
+js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+    Name:     "AEGIS",
+    Subjects: []string{"aegis.trades", "aegis.logs"},
+})
+```
+
+Called in `NewNATS()` on every startup. `CreateOrUpdateStream` is idempotent — if the stream already exists, it's a no-op. This means the sink is self-bootstrapping: deploy it, and the stream is guaranteed to exist.
+
+**Lesson:** JetStream adds one round-trip of latency per publish (waiting for the ack), but gives you persistence, replay, and delivery guarantees. For a data pipeline, this tradeoff is almost always worth it.
+
+---
+
+## 10. NATS Clustering in Kubernetes: Lessons Learned
+
+Scaling from 1 NATS node to a 3-node cluster in k3s surfaced several real-world issues:
+
+### Issue 1: PVC provisioner crash
+**Symptom:** `aegis-nats-1` stuck in `Pending`, PVC not provisioning.
+**Root cause:** The `local-path-provisioner` in k3s was in `CrashLoopBackOff` — it couldn't reach the K8s API due to an internal networking timeout.
+**Fix:** `sudo systemctl restart k3s` to restore internal cluster networking.
+**Lesson:** When PVCs won't provision, check the provisioner pod in `kube-system` first. The problem is often the provisioner itself, not your manifest.
+
+### Issue 2: Missing `server_name`
+**Symptom:** Pods crash with `jetstream cluster requires server_name to be set`.
+**Root cause:** JetStream clustering needs each node to have a unique identity. Single-node mode doesn't require this.
+**Fix:** Pass `--name $(HOSTNAME)` as a CLI arg in the StatefulSet container args. K8s sets `HOSTNAME` to the pod name (`aegis-nats-0`, `aegis-nats-1`, etc.).
+**Lesson:** NATS doesn't read `NATS_SERVER_NAME` from env vars. Use CLI args to set `server_name` dynamically.
+
+### Issue 3: StatefulSet ordering deadlock
+**Symptom:** `aegis-nats-1` restarts in a loop, `aegis-nats-2` never created.
+**Root cause:** Default `podManagementPolicy: OrderedReady` creates pods sequentially — it won't create pod N+1 until pod N is Ready. But a NATS cluster needs a quorum (2 of 3) to elect a meta leader and pass healthchecks. Pod 1 can never become Ready without pod 2, which can't be created without pod 1 being Ready.
+**Fix:** Set `podManagementPolicy: Parallel` on the StatefulSet so all 3 pods start simultaneously.
+**Gotcha:** This field can't be updated on an existing StatefulSet — you must `kubectl delete statefulset` and recreate it (PVCs survive).
+**Lesson:** Any clustered stateful service that needs quorum for health should use `podManagementPolicy: Parallel`.
+
+### Issue 4: DNS deadlock with headless Service
+**Symptom:** All 3 pods running but can't route to each other. Logs show `Waiting for routing to be established...` and `no such host` for peer DNS names.
+**Root cause:** Headless Services only register pod IPs in DNS after they pass the readiness probe. But NATS nodes need DNS to find peers, and they need peers to form a cluster, and they need a cluster to pass the readiness probe. Circular dependency.
+**Fix:** Set `publishNotReadyAddresses: true` on the headless Service. This tells K8s to add pod IPs to DNS immediately, before readiness.
+**Lesson:** For any StatefulSet that uses peer DNS for clustering (NATS, etcd, CockroachDB, Kafka), the headless Service **must** have `publishNotReadyAddresses: true`. This is easy to miss because single-node deployments never hit this issue.
+
+### The final working config (key fields)
+
+```yaml
+# Service
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true  # DNS before readiness
+
+# StatefulSet
+spec:
+  podManagementPolicy: Parallel   # all pods start together
+  template:
+    spec:
+      containers:
+        - args: ["-c", "/etc/nats/nats.conf", "--name", "$(HOSTNAME)"]
+          livenessProbe:
+            initialDelaySeconds: 30   # give cluster time to form
+            failureThreshold: 5
+          readinessProbe:
+            initialDelaySeconds: 10
+            failureThreshold: 6
+
+# nats.conf
+cluster {
+  name: aegis
+  port: 6222
+  routes [
+    nats-route://aegis-nats-0.aegis-nats.default.svc.cluster.local:6222
+    nats-route://aegis-nats-1.aegis-nats.default.svc.cluster.local:6222
+    nats-route://aegis-nats-2.aegis-nats.default.svc.cluster.local:6222
+  ]
+}
+```
+
+**Meta-lesson:** Single-node deploys are easy. Clustering is where you learn how K8s networking, DNS, probes, and StatefulSet ordering actually work. Every issue above is well-documented — but you only internalize them by hitting them yourself.

@@ -1,0 +1,33 @@
+# ConfigMap holds the nats.conf content as a key-value pair.
+# When mounted as a volume in the StatefulSet, K8s creates a file
+# at /etc/nats/nats.conf inside the pod with this content.
+#
+# To update NATS config: edit nats.conf, re-apply this ConfigMap,
+# then restart the StatefulSet (kubectl rollout restart).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aegis-nats-config
+data:
+  # The key name "nats.conf" becomes the filename in the mount path.
+  # So mountPath: /etc/nats + key: nats.conf = /etc/nats/nats.conf
+  nats.conf: |
+    port: 4222
+    http_port: 8222
+
+    jetstream {
+      store_dir: /data/jetstream
+      max_memory_store: 256MB
+      max_file_store: 1GB
+    }
+
+    cluster {
+      name: aegis
+      port: 6222
+
+      routes [
+        nats-route://aegis-nats-0.aegis-nats.default.svc.cluster.local:6222
+        nats-route://aegis-nats-1.aegis-nats.default.svc.cluster.local:6222
+        nats-route://aegis-nats-2.aegis-nats.default.svc.cluster.local:6222
+      ]
+    }

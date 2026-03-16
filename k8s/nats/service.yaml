@@ -12,4 +12,12 @@ spec:
     - port: 8222
       targetPort: 8222
       name: monitor
+    - port: 6222
+      targetPort: 6222
+      name: cluster
   clusterIP: None
+  # Publish pod IPs to DNS before they pass readiness probes.
+  # Without this, NATS nodes can't discover each other during
+  # bootstrap — they need routing to elect a leader, but the
+  # readiness probe fails until a leader is elected (deadlock).
+  publishNotReadyAddresses: true

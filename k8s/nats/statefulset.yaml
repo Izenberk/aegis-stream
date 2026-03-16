@@ -4,7 +4,12 @@ metadata:
   name: aegis-nats
 spec:
   serviceName: aegis-nats
-  replicas: 1
+  replicas: 3
+  # Parallel lets all 3 pods start at the same time.
+  # Default is OrderedReady, which waits for aegis-nats-0 to be Ready
+  # before creating aegis-nats-1 — but a NATS cluster needs a quorum
+  # (2 of 3 nodes) to elect a meta leader and pass healthchecks.
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       app: aegis-nats
@@ -16,15 +21,69 @@ spec:
       containers:
         - name: nats
           image: nats:2.10-alpine
-          args: ["--jetstream", "--store_dir", "/data/jetstream"]
+
+          # Load config from the ConfigMap instead of CLI args.
+          # The ConfigMap mounts nats.conf at /etc/nats/nats.conf.
+          # -c loads the config file, --name sets a unique server_name
+          # per pod. JetStream clustering requires each node to have a
+          # distinct name. $(HOSTNAME) resolves to the pod name
+          # (aegis-nats-0, aegis-nats-1, etc.) from the StatefulSet.
+          args: ["-c", "/etc/nats/nats.conf", "--name", "$(HOSTNAME)"]
+
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
           ports:
             - containerPort: 4222
               name: client
             - containerPort: 8222
               name: monitor
+            - containerPort: 6222
+              name: cluster
+
+          # Liveness probe: hits the NATS HTTP monitoring endpoint.
+          # If NATS hangs, K8s restarts the pod automatically.
+          # Liveness probe: hits the NATS HTTP monitoring endpoint.
+          # If NATS hangs, K8s restarts the pod automatically.
+          # Higher initialDelay + failureThreshold gives the cluster
+          # time to elect a JetStream meta leader during first boot.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 5
+
+          # Readiness probe: same endpoint. Pod only receives traffic
+          # (via the Service) once NATS reports healthy.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 6
+
           volumeMounts:
+            # JetStream data — backed by PVC, survives pod restarts.
             - name: data
               mountPath: /data/jetstream
+
+            # Config file from ConfigMap — mounted read-only.
+            - name: config
+              mountPath: /etc/nats
+
+      volumes:
+        # ConfigMap → volume. K8s creates a file at /etc/nats/nats.conf
+        # with the content from the ConfigMap's "nats.conf" key.
+        - name: config
+          configMap:
+            name: aegis-nats-config
+
   volumeClaimTemplates:
     - metadata:
         name: data

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"aegis-stream/pb"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -50,6 +52,25 @@ func main() {
 	}
 	defer conn.Drain()
 
+	// JetStream context from connection
+	js, err := jetstream.New(conn)
+	if err != nil {
+		slog.Error("failed to create JetStream context", "error", err)
+		os.Exit(1)
+	}
+
+	// Durable consumer on the AEGIS stream
+	cons, err := js.CreateOrUpdateConsumer(context.Background(), "AEGIS", jetstream.ConsumerConfig{
+		Name:  			"price-alerts",
+		Durable:  		"price-alerts",
+		FilterSubjects: 	[]string{*subject},
+		AckPolicy:  	jetstream.AckExplicitPolicy,
+	})
+	if err != nil {
+		slog.Error("failed to create consumer", "error", err)
+		os.Exit(1)
+	}
+
 	// Counters for the stats ticker. We use atomic operations because
 	// the subscription callback runs in NATS's internal goroutine pool,
 	// and the stats ticker runs in main — concurrent access.
@@ -59,9 +80,9 @@ func main() {
 	// Subscribe to the subject. The callback fires for every message.
 	// NATS manages the goroutine pool internally — we don't need to
 	// create workers like the main server does.
-	_, err = conn.Subscribe(*subject, func(msg *nats.Msg) {
+	_, err = cons.Consume(func(msg jetstream.Msg) {
 		var event pb.Event
-		if err := proto.Unmarshal(msg.Data, &event); err != nil {
+		if err := proto.Unmarshal(msg.Data(), &event); err != nil {
 			slog.Error("unmarshal failed", "error", err)
 			return
 		}
@@ -98,6 +119,7 @@ func main() {
 				"service", l.ServiceName,
 			)
 		}
+		msg.Ack()
 	})
 	if err != nil {
 		slog.Error("failed to subscribe", "error", err)

@@ -1,11 +1,13 @@
 package sink
 
 import (
+	"context"
 	"fmt"
 
 	"aegis-stream/pb"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -23,6 +25,7 @@ import (
 // different subjects without the publisher knowing about them.
 type NATSSink struct {
 	conn *nats.Conn
+	js	jetstream.JetStream
 }
 
 // NewNATS connects to a NATS server and returns a ready-to-use sink.
@@ -39,7 +42,25 @@ func NewNATS(url string) (*NATSSink, error) {
 		return nil, fmt.Errorf("NATS connection not ready, status: %v", conn.Status())
 	}
 
-	return &NATSSink{conn: conn}, nil
+	// Create a JetStream context from the connection.
+	js, err := jetstream.New(conn)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to create JetStream context: %w", err)
+	}
+
+	// CreateOrUpdateStream is idempotent — safe to call on every startup.
+    // This ensures the AEGIS stream exists and captures both subjects.
+	_, err = js.CreateOrUpdateStream(context.Background(), jetstream.StreamConfig{
+		Name:		"AEGIS",
+		Subjects:	[]string{"aegis.trades", "aegis.logs"},
+	})
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to create stream: %w", err)
+	}
+
+	return &NATSSink{conn: conn, js: js}, nil
 }
 
 // Write serializes the event with protobuf and publishes it to a
@@ -65,9 +86,11 @@ func (s *NATSSink) Write(event *pb.Event) error {
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
 
-	// Publish is non-blocking — it writes to the client's internal buffer.
-	// The client library flushes to the server in the background.
-	if err := s.conn.Publish(subject, data); err != nil {
+	// JetStream Publish returns a PubAck — the server confirms the
+	// message was persisted to the stream before this returns.
+	// Core NATS Publish is fire-and-forget; this is guaranteed delivery.
+	_, err = s.js.Publish(context.Background(), subject, data)
+	if err != nil {
 		return fmt.Errorf("failed to publish to %s: %w", subject, err)
 	}
 

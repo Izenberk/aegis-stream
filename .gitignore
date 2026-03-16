@@ -26,4 +26,5 @@ vendor/
 # Stray binaries built outside bin/
 /server
 /stress
+/consumer
 /dashboard/api/api

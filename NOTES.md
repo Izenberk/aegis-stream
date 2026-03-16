@@ -1802,3 +1802,159 @@ Each phase adds a more sophisticated event destination:
 3. **NATS** — proves we can fan out to independent services
 
 This progression (point-to-point → storage → pub/sub) mirrors how real systems evolve.
+
+---
+
+### JetStream API Upgrade (Core NATS → JetStream)
+
+**Why upgrade?** Core NATS `Publish()` is fire-and-forget — the client copies data to an internal buffer and hopes the server gets it. If the server crashes, messages in transit are lost. JetStream `Publish()` waits for a **PubAck** — the server confirms the message is persisted to disk before returning.
+
+**Sink changes:**
+```go
+// Before: fire-and-forget
+conn.Publish(subject, data)
+
+// After: guaranteed delivery with server acknowledgement
+js, _ := jetstream.New(conn)
+js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+    Name:     "AEGIS",
+    Subjects: []string{"aegis.trades", "aegis.logs"},
+})
+js.Publish(ctx, subject, data)  // blocks until PubAck received
+```
+
+`CreateOrUpdateStream` is idempotent — safe to call on every startup. The sink self-bootstraps: deploy it and the stream is guaranteed to exist.
+
+**Consumer changes:**
+```go
+// Before: ephemeral subscription (miss messages if offline)
+conn.Subscribe(subject, func(msg *nats.Msg) {
+    process(msg.Data)   // .Data is a field
+})
+
+// After: durable consumer with explicit acknowledgement
+cons, _ := js.CreateOrUpdateConsumer(ctx, "AEGIS", jetstream.ConsumerConfig{
+    Durable:        "price-alerts",     // survives restarts
+    FilterSubjects: []string{subject},  // only trades (or logs)
+    AckPolicy:      jetstream.AckExplicitPolicy,
+})
+cons.Consume(func(msg jetstream.Msg) {
+    process(msg.Data())  // .Data() is a method call
+    msg.Ack()            // tell NATS we're done
+})
+```
+
+**Key differences to remember:**
+- `Durable` — NATS remembers the consumer's position across restarts
+- `AckExplicit` — you must call `msg.Ack()`. If the consumer crashes mid-processing, NATS redelivers the message (at-least-once delivery)
+- `msg.Data()` is a method (JetStream), not `msg.Data` field (Core NATS)
+- `FilterSubjects` (plural) — common typo: `FilterSubject` won't compile
+
+**The import path:**
+```go
+"github.com/nats-io/nats.go"           // base connection (nats.Connect)
+"github.com/nats-io/nats.go/jetstream" // JetStream API (jetstream.New)
+```
+Both come from the same module — the `jetstream` sub-package ships with `nats.go`.
+
+---
+
+### NATS Clustering in Kubernetes
+
+Scaling from 1 NATS node to a 3-node cluster in k3s surfaced four real-world issues. Each one teaches a fundamental K8s concept.
+
+#### Issue 1: PVC Provisioner Crash
+
+**Symptom:** `aegis-nats-1` stuck in `Pending`, PVC not provisioning.
+
+**Root cause:** The `local-path-provisioner` pod in `kube-system` was in `CrashLoopBackOff`. It couldn't reach the K8s API server due to internal cluster networking issues (`i/o timeout` to `10.43.0.1:443`).
+
+**Fix:** `sudo systemctl restart k3s` to restore internal cluster networking.
+
+**Lesson:** When PVCs won't provision, check the provisioner pod first (`kubectl get pods -n kube-system | grep local-path`). The problem is often the provisioner itself, not your manifest.
+
+#### Issue 2: Missing `server_name`
+
+**Symptom:** Pods crash with `jetstream cluster requires server_name to be set`.
+
+**Root cause:** JetStream clustering needs each node to have a unique identity. Single-node mode doesn't require this, so it wasn't in our config.
+
+**Fix:** Pass `--name $(HOSTNAME)` as a CLI arg in the StatefulSet container args. K8s sets `HOSTNAME` to the pod name (`aegis-nats-0`, `aegis-nats-1`, etc.).
+
+**Why not an env var?** NATS doesn't read `server_name` from environment variables. The `--name` CLI flag is the correct way to set it dynamically. We still define the `HOSTNAME` env var in the StatefulSet using `fieldRef: metadata.name` so that `$(HOSTNAME)` resolves in the args.
+
+#### Issue 3: StatefulSet Ordering Deadlock
+
+**Symptom:** `aegis-nats-1` restarts in a loop, `aegis-nats-2` never created.
+
+**Root cause:** Default `podManagementPolicy: OrderedReady` creates pods sequentially — it won't create pod N+1 until pod N is `Ready`. But a NATS cluster needs a quorum (2 of 3 nodes) to elect a meta leader and pass health checks. Pod 1 can never become Ready without pod 2, which can't be created until pod 1 is Ready. Classic deadlock.
+
+**Fix:** Set `podManagementPolicy: Parallel` on the StatefulSet so all 3 pods start simultaneously.
+
+**Gotcha:** `podManagementPolicy` can't be updated on an existing StatefulSet. You must delete and recreate it (`kubectl delete statefulset aegis-nats && kubectl apply -f`). PVCs survive the delete since they're separate resources.
+
+**When to use Parallel:** Any clustered stateful service that needs quorum for health — NATS, etcd, CockroachDB, Consul.
+
+#### Issue 4: DNS Deadlock with Headless Service
+
+**Symptom:** All 3 pods running but can't route to each other. Logs show `Waiting for routing to be established...` and `no such host` for peer DNS names. `kubectl get endpoints aegis-nats` shows empty endpoints.
+
+**Root cause:** Headless Services only register pod IPs in DNS after pods pass the readiness probe. But NATS nodes need DNS to find peers → need peers to form a cluster → need a cluster to pass the readiness probe. Circular dependency.
+
+**Visual:**
+```
+Pod starts → needs DNS to find peers
+                    ↓
+         DNS only has Ready pods
+                    ↓
+         Pod isn't Ready (no cluster)
+                    ↓
+         DNS doesn't include pod ← deadlock
+```
+
+**Fix:** Set `publishNotReadyAddresses: true` on the headless Service. This tells K8s to add pod IPs to DNS immediately, before readiness probes pass.
+
+**Lesson:** For any StatefulSet that uses peer DNS for cluster bootstrapping (NATS, etcd, CockroachDB, Kafka), the headless Service **must** have `publishNotReadyAddresses: true`. Single-node deployments never hit this because there's no peer discovery.
+
+#### The Final Working Configuration
+
+These are the key fields that make NATS clustering work in K8s:
+
+```yaml
+# service.yaml
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true   # DNS before readiness
+
+# statefulset.yaml
+spec:
+  podManagementPolicy: Parallel    # all pods start together
+  template:
+    spec:
+      containers:
+        - args: ["-c", "/etc/nats/nats.conf", "--name", "$(HOSTNAME)"]
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          livenessProbe:
+            initialDelaySeconds: 30  # give cluster time to form
+            failureThreshold: 5
+          readinessProbe:
+            initialDelaySeconds: 10
+            failureThreshold: 6
+
+# nats.conf (in ConfigMap)
+cluster {
+  name: aegis
+  port: 6222
+  routes [
+    nats-route://aegis-nats-0.aegis-nats.default.svc.cluster.local:6222
+    nats-route://aegis-nats-1.aegis-nats.default.svc.cluster.local:6222
+    nats-route://aegis-nats-2.aegis-nats.default.svc.cluster.local:6222
+  ]
+}
+```
+
+**Meta-lesson:** Single-node deploys are easy. Clustering is where you learn how K8s networking, DNS, probes, and StatefulSet ordering actually work together. Every issue above is well-documented — but you only internalize them by hitting them yourself.
