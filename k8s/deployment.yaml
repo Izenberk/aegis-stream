@@ -29,7 +29,6 @@ spec:
         prometheus.io/path: "/metrics"     # Which path to hit
     spec:
       securityContext:
-        runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -58,6 +57,10 @@ spec:
               value: "500"
             - name: AEGIS_READ_TIMEOUT
               value: "30s"
+            - name: AEGIS_SINK
+              value: "nats"
+            - name: AEGIS_NATS_URL
+              value: "nats://aegis-nats:4222"
 
           # livenessProbe: "Is the process stuck?"
           # If /healthz fails 3 times in a row, K8s kills and restarts the pod.

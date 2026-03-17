@@ -1,0 +1,37 @@
+# --- Stage 1: Build ---
+# Same multi-stage pattern as the main server Dockerfile.
+# Full Go toolchain (~800MB) is used only for compiling.
+FROM golang:1.24-alpine AS builder
+
+# CA certs so the binary can verify TLS when connecting to NATS.
+RUN apk add --no-cache ca-certificates
+
+WORKDIR /src
+
+# Copy dependency files first — Docker caches this layer.
+# If go.mod hasn't changed, `go mod download` is skipped on rebuild.
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code. This layer rebuilds only when .go files change.
+COPY . .
+
+# Build a statically linked binary (same flags as main server):
+#   CGO_ENABLED=0  — pure Go, no C deps (required for scratch)
+#   -ldflags="-s -w" — strip debug info for smaller binary
+#   ./cmd/consumer   — build the consumer, not the server
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /bin/consumer ./cmd/consumer
+
+# --- Stage 2: Runtime ---
+# scratch = empty image. Only our binary and CA certs.
+FROM scratch
+
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+# Copy just the compiled consumer binary from the builder.
+COPY --from=builder /bin/consumer /consumer
+
+# No EXPOSE needed — the consumer doesn't listen on any ports.
+# It's a NATS subscriber that makes outbound connections only.
+
+ENTRYPOINT ["/consumer"]

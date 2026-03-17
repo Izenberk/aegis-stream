@@ -237,6 +237,6 @@ my-pipeline   3          3       Running   5m
 4. **Operator** — CRD, kubebuilder controller, reconciliation loop, self-healing
 5. **Dashboard** — Go API proxy, React/Tailwind/Recharts frontend, cost panel
 6. **Real Data** — Binance WebSocket feeder, multi-connection stress test with sustained + spike phases
-7. **Sink + Storage** *(next)* — Pluggable sink interface, PostgreSQL persistence, dashboard trade history
-8. **Service Mesh** *(future)* — Kafka/NATS fan-out to multiple consumers
-9. **Cloud Deploy** *(future)* — Production deployment on EKS/GKE with TLS and auth
+7. **Sink + Storage** — Pluggable sink interface, PostgreSQL persistence, dashboard trade history
+8. **NATS Fan-Out** — JetStream pub/sub, 3-node cluster, durable consumer with price alerts
+9. **Cloud Deploy** *(next)* — Production deployment on EKS/GKE with TLS and auth

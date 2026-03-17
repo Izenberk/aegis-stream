@@ -1,7 +1,7 @@
 # Aegis Stream: Implementation Progress Log
 
-**Last Updated:** March 12, 2026
-**Current State:** Phase 5 (Sink Interface + PostgreSQL) Complete
+**Last Updated:** March 17, 2026
+**Current State:** Phase 6 (NATS Fan-Out) Complete
 **Peak Throughput:** 239,231 events/sec
 
 ---
@@ -55,6 +55,7 @@ aegis-stream/
 ├── cmd/
 │   ├── bench/main.go          # Throughput benchmark with server-side verification
 │   ├── client/main.go         # Test client sending demo events
+│   ├── consumer/main.go       # NATS JetStream durable consumer (price alerts)
 │   ├── feed/main.go           # Live Binance WebSocket → aegis-stream bridge
 │   ├── stress/main.go         # Multi-connection sustained + spike stress test
 │   └── server/main.go         # Main TCP server with metrics and health checks
@@ -62,13 +63,21 @@ aegis-stream/
 │   ├── config/config.go       # Flags + env var configuration
 │   ├── frame/                 # TCP length-prefix framing (with tests)
 │   ├── metrics/metrics.go     # Prometheus metrics + /healthz endpoint
-│   └── server/                # Integration test
+│   ├── server/                # Integration test
+│   └── sink/                  # Pluggable sink interface (stdout, postgres, nats)
 ├── k8s/
 │   ├── deployment.yaml        # Pod template with probes and env config
 │   ├── service.yaml           # ClusterIP service for TCP + metrics
 │   ├── hpa.yaml               # Autoscaler on queue depth
 │   ├── prometheus-adapter-values.yaml
-│   └── grafana-dashboard.json # 7-panel monitoring dashboard
+│   ├── grafana-dashboard.json # 7-panel monitoring dashboard
+│   ├── nats/                  # NATS JetStream cluster (Phase 6)
+│   │   ├── statefulset.yaml   # 3-node cluster with Parallel pod management
+│   │   ├── service.yaml       # Headless Service with publishNotReadyAddresses
+│   │   ├── configmap.yaml     # nats.conf with JetStream + cluster routing
+│   │   └── nats.conf          # Local reference copy of NATS config
+│   └── consumer/              # Consumer service (Phase 6)
+│       └── deployment.yaml    # NATS subscriber with price alerts
 ├── operator/                   # Kubebuilder operator (Phase 3)
 │   ├── api/v1alpha1/           # CRD types (AegisPipelineSpec, Status)
 │   ├── internal/controller/    # Reconciliation loop
@@ -95,9 +104,11 @@ aegis-stream/
 │   │   ├── service.yaml         # ClusterIP on port 80
 │   │   └── rbac.yaml            # ServiceAccount to read AegisPipeline CRs
 │   └── Dockerfile.api          # Multi-stage: Go build → Alpine
-├── Dockerfile                 # Multi-stage build (11.8MB)
+├── Dockerfile                 # Multi-stage build for server (11.8MB)
+├── Dockerfile.consumer        # Multi-stage build for consumer
 ├── Makefile                   # Build automation
 ├── NOTES.md                   # Learning reference
+├── NATS.md                    # NATS deep-dive design notes
 ├── TODO.md                    # Task tracking
 ├── PROGRESS.md                # This file
 └── PLAN.md                    # Project vision and roadmap
@@ -129,11 +140,17 @@ aegis-stream/
 
 ---
 
-## 8. Phase 6 — Service-to-Service with NATS (In Progress)
+## 8. Phase 6 — Service-to-Service with NATS (Complete)
 
-- [ ] NATS sink (`internal/sink/nats.go`): publish events to subjects (`aegis.trades`, `aegis.logs`)
-- [ ] Config: `AEGIS_SINK=nats`, `AEGIS_NATS_URL` env var
-- [ ] Deploy NATS to k3s (StatefulSet + JetStream)
-- [ ] Consumer service (`cmd/consumer`): subscribe to NATS, process events
-- [ ] Update AegisPipeline CRD with `nats` sink type and `natsURL` field
-- [ ] Full loop in k3s: Binance → feed → aegis-stream → NATS → consumer
+- [x] NATS sink (`internal/sink/nats.go`): publish events to subjects (`aegis.trades`, `aegis.logs`)
+- [x] Config: `AEGIS_SINK=nats`, `AEGIS_NATS_URL` env var
+- [x] Deploy NATS to k3s (StatefulSet + JetStream, single node)
+- [x] Upgrade NATSSink from Core NATS to JetStream API (PubAck guaranteed delivery)
+- [x] Upgrade consumer to JetStream durable consumer with explicit ack
+- [x] Scale NATS to 3-node cluster (quorum, replication, fault tolerance)
+- [x] Resolved 4 clustering issues: PVC provisioner, server_name, StatefulSet ordering, DNS deadlock
+- [x] Consumer Dockerfile + K8s Deployment manifest
+- [x] Deploy consumer to k3s
+- [x] Update AegisPipeline CRD with `nats` sink type and `natsURL` field
+- [x] Full loop in k3s: Binance → feed → aegis-stream → NATS → consumer (426 events, 0 errors)
+- [x] Documented JetStream upgrade and clustering lessons in NATS.md and NOTES.md

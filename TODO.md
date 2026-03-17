@@ -144,24 +144,32 @@ Publish events to NATS so multiple independent services can consume the same str
 - [x] Test locally: `./bin/server -sink nats -nats-url nats://localhost:4222`
 
 ### 3. NATS in K8s (`k8s/nats/`)
-- [ ] Deploy NATS to k3s (StatefulSet with JetStream enabled)
+- [x] Deploy NATS to k3s (StatefulSet with JetStream enabled)
 - [x] Headless Service for `aegis-nats:4222` DNS
-- [ ] Connect aegis-stream pods to NATS via Service DNS
+- [x] Scale to 3-node NATS cluster with JetStream replication
+- [x] Connect aegis-stream pods to NATS via Service DNS
 
 ### 4. Consumer Service (`cmd/consumer/`)
 - [x] Build a Go service that subscribes to `aegis.trades` from NATS
 - [x] Price alert: log a warning when trade price crosses a threshold
-- [ ] Deploy consumer to k3s, verify it receives events published by aegis-stream
+- [x] Upgrade consumer to JetStream durable consumer with explicit ack
+- [x] Deploy consumer to k3s, verify it receives events published by aegis-stream
 
 ### 5. Update Operator CRD
 - [x] Add `nats` to `sinkType` enum and `natsURL` field to CRD spec
 - [x] Update controller to map `natsURL` → `AEGIS_NATS_URL` env var
 - [ ] Regenerate CRD manifests
 
-### 6. End-to-End Validation
-- [ ] Full loop in k3s: Binance → feed → aegis-stream → NATS → consumer
-- [ ] Verify consumer receives all published events
-- [ ] Update NOTES.md with NATS concepts
+### 6. JetStream Upgrade
+- [x] Upgrade NATSSink from Core NATS to JetStream API (PubAck)
+- [x] Upgrade consumer from ephemeral to durable JetStream consumer
+- [x] Stream auto-creation (`AEGIS` stream) on sink startup
+
+### 7. End-to-End Validation
+- [x] Full loop locally: client → server → NATS → consumer
+- [x] Full loop in k3s: Binance → feed → aegis-stream → NATS → consumer (426 events, 0 errors)
+- [x] Verify consumer receives all published events
+- [x] Update NOTES.md and NATS.md with JetStream and clustering lessons
 
 ## Phase 7 — Cloud Deployment (Future)
 
