@@ -7,30 +7,29 @@ A high-throughput, Kubernetes-native data router built in Go. Aegis Stream inges
 ## Architecture
 
 ```
-Clients (TCP)
-    │
-    ▼
-┌─────────────────────────────────────────────┐
-│  aegis-stream pod                           │
-│  ┌─────────┐   ┌────────┐   ┌───────────┐  │
-│  │ TCP     │──▶│ Buffer │──▶│ Worker    │  │
-│  │ Listener│   │ Channel│   │ Pool (N)  │  │
-│  └─────────┘   └────────┘   └───────────┘  │
-│       │                           │         │
-│  /healthz                    /metrics       │
-└─────────────────────────────────────────────┘
-    │                               │
-    ▼                               ▼
-K8s Probes                    Prometheus
-                                    │
-                              ┌─────┴──────┐
-                              │ prometheus- │
-                              │ adapter     │
-                              └─────┬──────┘
-                                    │
-                                    ▼
-                              HPA (2-10 pods)
+Binance WSS ──► cmd/feed ──► TCP :9000
+                                │
+                                ▼
+               ┌─────────────────────────────────────┐
+               │  aegis-stream pod                   │
+               │  TCP Listener → Buffer → Workers    │
+               │       │                    │        │
+               │  /healthz             /metrics      │
+               └─────────────────────────────────────┘
+                                │
+                    ┌───────────┼───────────┐
+                    ▼           ▼           ▼
+                 stdout    PostgreSQL     NATS
+                                      (3-node JS)
+                                          │
+                                          ▼
+                                   cmd/consumer
+                                  (price alerts)
 ```
+
+**Sink layer:** Pluggable sink interface routes events to stdout, PostgreSQL (batch inserts), or NATS JetStream (pub/sub fan-out).
+
+**NATS cluster:** 3-node JetStream cluster with stream replication. Durable consumers with explicit ack for at-least-once delivery.
 
 **Operator layer:** An `AegisPipeline` CRD lets you declare the entire deployment in a single YAML. The operator reconciles Deployments, Services, and config automatically.
 
@@ -44,22 +43,28 @@ aegis-stream/
 │   ├── server/       # Main TCP server
 │   ├── client/       # Test client
 │   ├── bench/        # Throughput benchmark
+│   ├── consumer/     # NATS JetStream consumer (price alerts)
 │   ├── feed/         # Live Binance market data feeder
 │   └── stress/       # Multi-connection stress test
 ├── internal/
 │   ├── config/       # Flags + env var configuration
 │   ├── frame/        # TCP length-prefix framing
 │   ├── metrics/      # Prometheus metrics + /healthz
-│   └── server/       # Integration test
+│   ├── server/       # Integration test
+│   └── sink/         # Pluggable sink interface (stdout, postgres, nats)
 ├── proto/            # Protobuf schema (Trade, Log, Event)
 ├── pb/               # Generated protobuf Go code
-├── k8s/              # K8s manifests (Deployment, Service, HPA)
+├── k8s/
+│   ├── nats/         # NATS JetStream 3-node cluster manifests
+│   ├── consumer/     # Consumer deployment manifest
+│   └── ...           # Server Deployment, Service, HPA
 ├── operator/         # Kubebuilder operator (CRD + controller)
 ├── dashboard/
 │   ├── api/          # Go backend (Prometheus + K8s API proxy)
 │   ├── web/          # React + Tailwind + Recharts frontend
 │   └── k8s/          # Dashboard K8s manifests
-├── Dockerfile        # Multi-stage build (11.8MB image)
+├── Dockerfile        # Multi-stage server build (11.8MB)
+├── Dockerfile.consumer  # Multi-stage consumer build
 └── Makefile
 ```
 
@@ -67,10 +72,11 @@ aegis-stream/
 
 ### Prerequisites
 
-- Go 1.23+
+- Go 1.24+
 - Protobuf compiler (`protoc`)
 - Docker
 - k3s (for K8s deployment)
+- NATS server (for local NATS testing, or use the k3s cluster)
 
 ### Build and run locally
 
@@ -166,6 +172,29 @@ kubectl port-forward svc/aegis-dashboard 8080:80
 # Open http://localhost:8080
 ```
 
+### Deploy NATS + consumer to k3s
+
+```bash
+# Deploy NATS JetStream cluster (3 nodes)
+kubectl apply -f k8s/nats/configmap.yaml
+kubectl apply -f k8s/nats/service.yaml
+kubectl apply -f k8s/nats/statefulset.yaml
+
+# Verify cluster
+kubectl get pods -l app=aegis-nats    # all 3 should be 1/1 Running
+
+# Build and deploy the consumer
+docker build -f Dockerfile.consumer -t aegis-consumer:latest .
+docker save aegis-consumer:latest -o /tmp/aegis-consumer.tar
+sudo k3s ctr images import /tmp/aegis-consumer.tar
+kubectl apply -f k8s/consumer/deployment.yaml
+
+# Run the full loop: Binance → feed → aegis-stream → NATS → consumer
+kubectl port-forward svc/aegis-stream 9000:9000
+./bin/feed                            # in another terminal
+kubectl logs -f -l app=aegis-consumer # watch trades arrive
+```
+
 ## Configuration
 
 The server reads config from flags and environment variables (env vars take priority):
@@ -179,6 +208,9 @@ The server reads config from flags and environment variables (env vars take prio
 | `AEGIS_MAX_CONNS` | `1000` | Max simultaneous TCP connections |
 | `AEGIS_READ_TIMEOUT` | `30s` | TCP read deadline per frame |
 | `AEGIS_PROCESS_DELAY` | `0` | Per-event processing delay to simulate I/O (e.g. `10ms`) |
+| `AEGIS_SINK` | `stdout` | Event destination: `stdout`, `postgres`, or `nats` |
+| `AEGIS_POSTGRES_URL` | | PostgreSQL connection string (when sink=postgres) |
+| `AEGIS_NATS_URL` | | NATS server URL (when sink=nats), e.g. `nats://aegis-nats:4222` |
 
 ## AegisPipeline CRD
 
@@ -212,6 +244,9 @@ my-pipeline   3          3       Running   5m
 - **sync.Pool for buffers** — reuses byte buffers to minimize GC pressure
 - **scratch Docker image** — 11.8MB with zero attack surface (no shell, no OS)
 - **HPA on queue depth** — scales on actual backpressure, not CPU (which doesn't reflect I/O-bound load)
+- **Pluggable sink interface** — `Write()` + `Close()` makes destinations interchangeable (stdout, PostgreSQL, NATS)
+- **NATS JetStream over Kafka** — lightweight Go-native broker, single binary, minimal config, ideal for learning and small clusters
+- **Durable consumers with explicit ack** — at-least-once delivery, survives consumer restarts
 
 ## Observability
 
