@@ -23,6 +23,9 @@ vendor/
 .env
 .env.*
 
+# K8s Secret manifests (contain credentials — manage separately)
+k8s/**/secret*.yaml
+
 # Stray binaries built outside bin/
 /server
 /stress
