@@ -2,7 +2,7 @@
 
 **Last Updated:** March 17, 2026
 **Current State:** Phase 6 (NATS Fan-Out) Complete
-**Peak Throughput:** 239,231 events/sec
+**Throughput:** ~150,000–200,000 events/sec end-to-end (varies with system load)
 
 ---
 

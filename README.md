@@ -2,7 +2,7 @@
 
 A high-throughput, Kubernetes-native data router built in Go. Aegis Stream ingests binary events over TCP, routes them through a concurrent worker pool, and auto-scales based on backpressure metrics.
 
-**Peak throughput:** 239,231 events/sec on a single node.
+**Throughput:** ~150,000–200,000 events/sec end-to-end on a single node (varies with system load).
 
 ## Architecture
 
