@@ -267,11 +267,10 @@ my-pipeline   3          3       Running   5m
 ## Implementation Phases
 
 1. **Core Engine** — TCP server, protobuf, worker pool, graceful shutdown
-2. **Hardening** — tests, config, Prometheus metrics, health checks, structured logging, resilience (panic recovery, read deadlines, connection limits, backpressure)
+2. **Hardening** — tests, config, Prometheus metrics, health checks, structured logging, resilience
 3. **K8s Integration** — Dockerfile, Deployment, Service, HPA, Grafana dashboard
-4. **Operator** — CRD, kubebuilder controller, reconciliation loop, self-healing
-5. **Dashboard** — Go API proxy, React/Tailwind/Recharts frontend, cost panel
-6. **Real Data** — Binance WebSocket feeder, multi-connection stress test with sustained + spike phases
-7. **Sink + Storage** — Pluggable sink interface, PostgreSQL persistence, dashboard trade history
-8. **NATS Fan-Out** — JetStream pub/sub, 3-node cluster, durable consumer with price alerts
-9. **Cloud Deploy** *(next)* — Production deployment on EKS/GKE with TLS and auth
+4. **Operator + Dashboard** — CRD, kubebuilder controller, reconciliation loop, self-healing, React/Go cost dashboard
+5. **Real Data** — Binance WebSocket feeder, multi-connection stress test with sustained + spike phases
+6. **Sink + Storage** — Pluggable sink interface, PostgreSQL batch inserts, dashboard trade history
+7. **NATS Fan-Out** — JetStream pub/sub, 3-node cluster, durable consumer with price alerts
+8. **Cloud Deploy** *(next)* — Hetzner VPS (k3s), TLS on TCP listener, Bearer auth on metrics/health
